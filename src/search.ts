@@ -1,6 +1,7 @@
 import { clamp, PhysicsWorld, POCKETS, segmentClear, simulate, TABLE } from './physics';
 import { adjudicate, describeEventChain, groupOf, legalFirstIds, remainingFor } from './rules';
 import type { Ball, Plan, RuleState, SearchRequest, SearchUpdate, Shot, SortMode } from './types';
+import { EXTENDED_POWER_START, shotPower } from './power';
 
 export interface Route { angle: number; label: string; length: number; cut: number; contact: Point; kind: Shot['kind'] }
 export interface SearchGrid { route: Route; shots: Shot[] }
@@ -85,7 +86,27 @@ export function positionScore(balls: Ball[], rules: RuleState, target: number): 
   }
   return clamp(best + Math.min(8, options * 1.5), 0, 100);
 }
-export function planScore(plan: Pick<Plan, 'complexity' | 'position' | 'robustness'>, sort: SortMode): number {
+export function planScore(plan: Pick<Plan, 'complexity' | 'position' | 'robustness'> & Partial<Pick<Plan, 'route' | 'shot' | 'outcome'>>, sort: SortMode): number {
+  if (sort === 'fancy') {
+    const events = plan.outcome?.events ?? [];
+    const affected = new Set<number>();
+    for (const event of events) {
+      if (event.type === 'contact' || event.type === 'rail' || event.type === 'pocket' || event.type === 'off') {
+        affected.add(event.ball);
+        if (event.type === 'contact' && event.other !== undefined) affected.add(event.other);
+      }
+    }
+    const contacts = events.filter(event => event.type === 'contact').length;
+    const rails = events.filter(event => event.type === 'rail').length;
+    const shot = plan.shot;
+    const technique = shot ? (shot.kind === 'masse' ? 100 : shot.kind === 'jump' ? 78 : 0)
+      + Math.min(30, shot.elevation * 0.35 + Math.hypot(shot.tipX, shot.tipY) * 24) : 0;
+    const routeStyle = /组合球/.test(plan.route ?? '') ? 100 : /翻袋|解球/.test(plan.route ?? '') ? 72 : 0;
+    const impact = Math.min(100, Math.max(0, affected.size - 2) * 20);
+    const eventComplexity = Math.min(100, Math.max(0, contacts - 1) * 22 + rails * 12);
+    return plan.complexity * 0.4 + impact * 0.28 + technique * 0.17
+      + Math.max(routeStyle, eventComplexity) * 0.15;
+  }
   const weights = sort === 'simple' ? [0.72, 0.13, 0.15] : sort === 'position' ? [0.14, 0.73, 0.13] : sort === 'robust' ? [0.13, 0.14, 0.73] : [0.36, 0.36, 0.28];
   return (100 - plan.complexity) * weights[0] + plan.position * weights[1] + plan.robustness * weights[2];
 }
@@ -100,19 +121,23 @@ function diverse(a: Plan, b: Plan) {
     || a.route !== b.route || dist(cueA, cueB) > 0.17 || Math.abs(a.shot.tipY - b.shot.tipY) > 0.45 || Math.abs(a.shot.tipX - b.shot.tipX) > 0.45;
 }
 // Keep displayed parameters identical to the values the physics engine uses.
-function normalizeShot(shot: Shot): Shot {
+function normalizeShot(shot: Shot, unlimitedPower = false, maxPower = EXTENDED_POWER_START): Shot {
   const bounds = shot.kind === 'normal' ? [0, 34] : shot.kind === 'jump' ? [20, 78] : [36, 82];
   const len = Math.hypot(shot.tipX, shot.tipY), scale = len > 0.85 ? 0.85 / len : 1;
-  return { ...shot, power: clamp(shot.power, 1, 100), elevation: clamp(shot.elevation, bounds[0], bounds[1]),
+  return { ...shot, ...(unlimitedPower ? { unlimitedPower: true } : shot.unlimitedPower !== undefined ? { unlimitedPower: false } : {}), power: Math.min(shotPower({ power: shot.power, unlimitedPower }), unlimitedPower ? maxPower : 100), elevation: clamp(shot.elevation, bounds[0], bounds[1]),
     tipX: shot.tipX * scale, tipY: shot.tipY * scale };
 }
 export function shotKey(shot: Shot): string {
-  return [shot.kind, shot.angle, shot.power, shot.tipX, shot.tipY, shot.elevation].map(v => typeof v === 'number' ? v.toFixed(6) : v).join(':');
+  return [shot.kind, shot.angle, shot.power, shot.tipX, shot.tipY, shot.elevation, !!shot.unlimitedPower].map(v => typeof v === 'number' ? v.toFixed(6) : v).join(':');
 }
-export function coarseShots(route: Route): Shot[] {
+export function searchPowerLimit(req: Pick<SearchRequest, 'unlimitedPower' | 'searchPowerMax'>): number {
+  return req.unlimitedPower ? Math.max(EXTENDED_POWER_START, Number.isFinite(req.searchPowerMax) ? req.searchPowerMax! : EXTENDED_POWER_START) : 100;
+}
+export function coarseShots(route: Route, options: Pick<SearchRequest, 'unlimitedPower' | 'searchPowerMax'> = {}): Shot[] {
   const shots: Shot[] = [];
+  const maxPower = searchPowerLimit(options);
   const add = (offset: number, power: number, tipX: number, tipY: number, elevation: number) =>
-    shots.push(normalizeShot({ angle: route.angle + offset, power, tipX, tipY, elevation, kind: route.kind }));
+    shots.push(normalizeShot({ angle: route.angle + offset, power, tipX, tipY, elevation, kind: route.kind }, !!options.unlimitedPower, maxPower));
   if (route.kind === 'normal') {
     const spins = [[0, 0], [0, -0.65], [0, 0.65], [-0.45, 0], [0.45, 0], [-0.4, -0.45], [0.4, -0.45], [-0.4, 0.45], [0.4, 0.45]];
     for (const offset of [0, -0.003, 0.003, -0.007, 0.007, -0.013, 0.013])
@@ -131,6 +156,22 @@ export function coarseShots(route: Route): Shot[] {
       for (const factor of [0.35, 0.65, 1, 1.25]) for (const power of [18, 32, 48, 64, 82]) add(-bend * factor, power, x, y, e);
     }
   }
+  if (options.unlimitedPower) {
+    // Reuse each stroke's angle/spin/elevation families at additional energies.
+    // Keep ordinary candidates intact; extended shots supplement them.
+    const families = new Map<string, Shot>();
+    for (const shot of shots) {
+      if (route.kind === 'normal' && Math.abs(shot.angle - route.angle) > 0.0071) continue;
+      families.set([shot.angle, shot.tipX, shot.tipY, shot.elevation].join(':'), shot);
+    }
+    const powers = new Set([82, 100, 125, 160, 220, 300, maxPower].filter(p => p <= maxPower));
+    for (let power = 450; power < maxPower; power *= 1.5) powers.add(power);
+    const existing = new Set(shots.map(shotKey));
+    for (const power of powers) for (const family of families.values()) {
+      const shot = { ...family, power };
+      if (!existing.has(shotKey(shot))) { shots.push(shot); existing.add(shotKey(shot)); }
+    }
+  }
   return shots;
 }
 export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => void, preparedGrids?: SearchGrid[]): Plan[] {
@@ -138,13 +179,14 @@ export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => 
   const cue = req.balls.find(b => b.id === 0 && !b.pocketed), target = req.balls.find(b => b.id === req.target && !b.pocketed);
   if (!cue || !target || !POCKETS[req.pocket] || req.rules.breakShot) { onUpdate?.({ type: 'done', id: req.id, plans: [], checked, elapsed: 0 }); return []; }
   const candidates: Plan[] = [];
-  const grids = preparedGrids ?? generateRoutes(req).map(route => ({ route, shots: coarseShots(route) }));
+  const grids = preparedGrids ?? generateRoutes(req).map(route => ({ route, shots: coarseShots(route, req) }));
+  const maxPower = searchPowerLimit(req);
   const total = grids.reduce((sum, grid) => sum + grid.shots.length, 0) + 1080 + 288;
   interface Seed { route: Route; shot: Shot; loss: number }
   const seeds: Record<Shot['kind'], Seed[]> = { normal: [], jump: [], masse: [] };
   const legal = legalFirstIds(req.balls, req.rules), seen = new Map<string, number>();
   const tryShot = (route: Route, input: Shot): Seed => {
-    const shot = normalizeShot(input);
+    const shot = normalizeShot(input, !!req.unlimitedPower, maxPower);
     const key = `${shotKey(shot)}:${route.contact.x}:${route.contact.y}`;
     const cached = seen.get(key);
     if (cached !== undefined) return { route, shot, loss: cached };
@@ -214,7 +256,7 @@ export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => 
   for (const pool of Object.values(seeds)) for (let seed of pool) {
     for (let level = 0; level < 3; level++) for (let pass = 0; pass < 2; pass++) {
       const steps = { angle: (seed.shot.kind === 'normal' ? [0.012, 0.004, 0.0013] : [0.04, 0.012, 0.003])[level],
-        power: [7, 3, 1][level], tipX: [0.16, 0.07, 0.025][level], tipY: [0.16, 0.07, 0.025][level], elevation: [6, 2.5, 0.8][level] };
+        power: [7, 3, 1][level] * Math.max(1, seed.shot.power / 100), tipX: [0.16, 0.07, 0.025][level], tipY: [0.16, 0.07, 0.025][level], elevation: [6, 2.5, 0.8][level] };
       const previous = seed;
       for (const parameter of Object.keys(steps) as (keyof typeof steps)[]) {
         const centre = seed;
@@ -247,11 +289,11 @@ export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => 
     ];
     const tested = new Set([shotKey(plan.shot)]);
     for (const v of variations) {
-      const [parameter, delta] = Object.entries(v)[0] as [Exclude<keyof Shot, 'kind'>, number];
-      let perturbed = normalizeShot({ ...plan.shot, [parameter]: plan.shot[parameter] + delta });
+      const [parameter, delta] = Object.entries(v)[0] as ['angle' | 'power' | 'tipX' | 'tipY' | 'elevation', number];
+      let perturbed = normalizeShot({ ...plan.shot, [parameter]: plan.shot[parameter] + delta }, !!req.unlimitedPower, maxPower);
       // At a parameter limit, use a distinct inward perturbation instead of
       // counting the unchanged successful shot as extra tolerance evidence.
-      if (tested.has(shotKey(perturbed))) perturbed = normalizeShot({ ...plan.shot, [parameter]: plan.shot[parameter] - 2 * delta });
+      if (tested.has(shotKey(perturbed))) perturbed = normalizeShot({ ...plan.shot, [parameter]: plan.shot[parameter] - 2 * delta }, !!req.unlimitedPower, maxPower);
       tested.add(shotKey(perturbed));
       if (success(req, simulate(req.balls, perturbed))) hits++; checked++;
     }

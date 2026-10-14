@@ -10,6 +10,7 @@
     "test": "tsx --test tests/*.test.ts",
     "test:browser": "node tests/browser.mjs",
     "test:gpu": "node tests/gpu.browser.mjs",
+    "test:power": "node tests/power.browser.mjs",
     "test:render": "node tests/rolling.browser.mjs",
     "screenshots": "node scripts/screenshots.mjs"
   },

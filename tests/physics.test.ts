@@ -16,6 +16,29 @@ test('sliding decays to rolling and settles without NaN or modifying input', () 
   for (const b of sim.balls) for (const n of [b.x, b.y, b.z, b.vx, b.vy]) assert.ok(Number.isFinite(n));
   assert.equal(sim.balls[0].vx, 0);
 });
+
+test('unlimited power increases actual impulse and preserves continuous collisions above 100%', () => {
+  const input = [ball(0, 1.27, 0.9), ball(1, 1.27, 0.4)];
+  const normal = new PhysicsWorld(input, { ...base, angle: -Math.PI / 2, power: 100 });
+  const limited = new PhysicsWorld(input, { ...base, angle: -Math.PI / 2, power: 220 });
+  const unlimitedShot = { ...base, angle: -Math.PI / 2, power: 220, unlimitedPower: true };
+  const unlimited = new PhysicsWorld(input, unlimitedShot, true);
+  assert.deepEqual(limited.balls, normal.balls);
+  assert.ok(Math.abs(unlimited.balls[0].vy) > Math.abs(normal.balls[0].vy) * 2);
+  while (!unlimited.done) unlimited.step();
+  const result = unlimited.result();
+  assert.ok(result.settled);
+  assert.equal(result.events.find(e => e.type === 'contact')?.other, 1);
+  assert.ok(result.events.some(e => e.type === 'pocket' && e.ball === 1 && e.pocket === 1));
+  assert.deepEqual(result, simulate(input, unlimitedShot, true));
+  for (const power of [300, 600]) {
+    const simulation = simulate(input, { ...unlimitedShot, power }, true);
+    assert.ok(simulation.settled);
+    assert.equal(simulation.events.find(e => e.type === 'contact')?.other, 1);
+    for (const ball of simulation.balls) for (const value of Object.values(ball))
+      if (typeof value === 'number') assert.ok(Number.isFinite(value));
+  }
+});
 test('topspin follows and backspin draws after an object collision', () => {
   const setup = [ball(0, 0.6, 0.635), ball(1, 0.95, 0.635)];
   const draw = simulate(setup, { ...base, tipY: -0.7 });

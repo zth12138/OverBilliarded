@@ -1,5 +1,6 @@
 import { CUSHIONS, POCKETS } from './physics';
 import { legalFirstIds } from './rules';
+import { shotPower } from './power';
 import type { SearchGrid } from './search';
 import type { SearchRequest } from './types';
 
@@ -44,28 +45,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var first = false; var touched = false; var potted = false; var invalid = false;
   var quiet = 0u;
   // 12 second horizon. Fixed coarse steps differ from CPU's continuous impacts.
-  for (var tick = 0u; tick < 2880u; tick++) {
+  var elapsed = 0.0;
+  for (var tick = 0u; tick < 12000u; tick++) {
+    var maxSpeed = 0.0;
+    for (var i = 0u; i < n; i++) { if (live[i]) { maxSpeed = max(maxSpeed, length(v[i])); } }
+    // Above-normal energy needs smaller steps to avoid coarse collision tunnelling.
+    let dt = select(DT, min(DT, R * 0.4 / max(0.001, maxSpeed)), s.shot.y > 100.0);
+    elapsed += dt;
     var moving = false;
     for (var i = 0u; i < n; i++) {
       if (!live[i]) { continue; }
-      if (p[i].z > R + 0.0001 || v[i].z > 0.01) { v[i].z -= 9.81 * DT; }
+      if (p[i].z > R + 0.0001 || v[i].z > 0.01) { v[i].z -= 9.81 * dt; }
       else {
         p[i].z = R; v[i].z = 0.0;
         let slip = v[i].xy + R * vec2<f32>(-w[i].y, w[i].x);
-        let mag = length(slip); let impulse = 0.21 * 9.81 * DT;
+        let mag = length(slip); let impulse = 0.21 * 9.81 * dt;
         if (mag > impulse * 3.5) {
           let dv = -impulse * slip / mag;
           v[i] = vec3<f32>(v[i].xy + dv, v[i].z);
           w[i] = vec3<f32>(w[i].xy + 2.5 / R * vec2<f32>(dv.y, -dv.x), w[i].z);
         } else {
           var planarV = v[i].xy - slip / 3.5; let magV = length(planarV);
-          planarV *= max(0.0, 1.0 - 0.019 * 9.81 * DT / max(magV, 0.000001));
+          planarV *= max(0.0, 1.0 - 0.019 * 9.81 * dt / max(magV, 0.000001));
           v[i] = vec3<f32>(planarV, 0.0);
           w[i] = vec3<f32>(-planarV.y / R, planarV.x / R, w[i].z);
         }
-        w[i].z *= exp(-1.05 * DT);
+        w[i].z *= exp(-1.05 * dt);
       }
-      p[i] += v[i] * DT;
+      p[i] += v[i] * dt;
       if (p[i].z < R) {
         p[i].z = R;
         v[i].z = select(0.0, -v[i].z * 0.2, abs(v[i].z) > 0.32);
@@ -134,7 +141,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (live[objectIndex]) { nearPocket = min(nearPocket, distance(p[objectIndex].xy, scene[1u + called].xy)); }
     if (invalid || (potted && first)) { break; }
     if (!moving) { quiet++; } else { quiet = 0u; }
-    if (quiet >= 12u) { break; }
+    if (quiet >= 12u || elapsed >= 12.0) { break; }
   }
   var loss = select(2.0 + nearContact, 0.1 + nearPocket, touched);
   if (potted && first) { loss = -1.0; }
@@ -203,7 +210,7 @@ export async function gpuScreen(req: SearchRequest, grids: SearchGrid[], onProgr
       const scores: number[] = [];
       for (let offset = 0; offset < grid.shots.length; offset += 256) {
         const batch = grid.shots.slice(offset, offset + 256), input = new Float32Array(batch.length * 8);
-        batch.forEach((s, i) => input.set([s.angle, s.power, s.tipX, s.tipY, s.elevation, s.kind === 'normal' ? 0 : s.kind === 'jump' ? 1 : 2, grid.route.contact.x, grid.route.contact.y], i * 8));
+        batch.forEach((s, i) => input.set([s.angle, shotPower(s), s.tipX, s.tipY, s.elevation, s.kind === 'normal' ? 0 : s.kind === 'jump' ? 1 : 2, grid.route.contact.x, grid.route.contact.y], i * 8));
         const shots = make(input.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const output = make(batch.length * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
         const read = make(batch.length * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);

@@ -5,6 +5,7 @@ import { COLORS, TableRenderer } from './renderer';
 import { BallSurfaceRenderer, cueBallView } from './ball-surface';
 import { scene, type SceneName } from './scenes';
 import { ShotFeedback } from './shot-feedback';
+import { EXTENDED_POWER_START, shotPower } from './power';
 import { TableAudio } from './audio';
 import type { Ball, Plan, RuleState, SearchUpdate, Shot, Simulation, SortMode } from './types';
 
@@ -22,8 +23,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="table-stage"><div class="stage-top"><span id="stage-mode">练习球桌</span><span class="stage-toggles"><label class="check-label"><input id="sound" type="checkbox" checked> 音效</label><label class="check-label"><input id="aim" type="checkbox" checked> 瞄准线</label><label class="check-label"><input id="position-preview" type="checkbox"> 白球走位</label></span></div><canvas id="table" aria-label="台球桌，点击空白处瞄准，点击目标球或洞口选择" tabindex="0"></canvas><div class="stage-bottom"><span id="table-hint">点击球桌瞄准 · 空格出杆 · ← → 微调角度</span><span id="shot-number">第 01 杆</span></div></div>
       <div class="status-bar" role="status" aria-live="polite"><span class="status-mark"></span><span id="status">准备就绪</span><button id="place-cue" class="inline-button">放置白球</button></div>
       <section class="shot-console" aria-label="击球控制">
-        <div class="power-control"><div class="control-heading"><label for="power">击球力度</label><output id="power-value">45<span>%</span></output></div><input id="power" type="range" min="1" max="100" value="45"><div class="range-labels"><span>轻推</span><span>强击</span></div><div class="angle-row"><label for="angle">方向</label><input id="angle" type="number" step="0.1" value="0"><span>°</span><button id="preview" class="inline-button">预览本杆</button></div></div>
-        <div class="spin-control"><div class="control-heading"><span>杆头击点</span><span class="spin-heading-actions"><label class="cue-mark-toggle" title="显示随白球滚动的六个红点，观察高低杆与侧旋"><input id="cue-marks" type="checkbox"> 红点</label><button class="inline-button" id="reset-spin">回中</button></span></div><div class="spin-pad-row"><div class="spin-label">左塞</div><div class="spin-pad" id="spin-pad" tabindex="0" role="slider" aria-label="杆头击点，方向键调整，高杆向上低杆向下" aria-valuemin="-85" aria-valuemax="85" aria-valuenow="0"><canvas id="spin-ball" width="94" height="94" aria-hidden="true"></canvas><span class="spin-line horizontal"></span><span class="spin-line vertical"></span><span class="spin-marker" id="spin-marker"></span><span class="spin-top">高杆</span><span class="spin-bottom">低杆</span></div><div class="spin-label">右塞</div><span id="spin-description">中杆<br><small>不加塞</small></span></div></div>
+        <div class="power-control"><div class="control-heading"><label for="power">击球力度</label><output id="power-value">45<span>%</span></output></div><input id="power" type="range" min="1" max="100" value="45"><div class="range-labels"><span>轻推</span><span id="power-range-label">100% 强击</span></div><label class="check-label power-unlimited"><input id="unlimited-power" type="checkbox"> 力度无限制</label><div id="extended-power-controls" class="extended-power-controls" hidden><label for="power-number">力度 %</label><input id="power-number" type="number" min="1" step="1" value="45"><button id="expand-power" class="inline-button" type="button">扩大滑杆范围</button></div><div class="angle-row"><label for="angle">方向</label><input id="angle" type="number" step="0.1" value="0"><span>°</span><button id="preview" class="inline-button">预览本杆</button></div></div>
+        <div class="spin-control"><div class="control-heading"><span>杆头击点</span><span class="spin-heading-actions"><label class="cue-mark-toggle" title="显示随白球滚动的六个红点，观察高低杆与侧旋"><input id="cue-marks" type="checkbox" checked> 红点</label><button class="inline-button" id="reset-spin">回中</button></span></div><div class="spin-pad-row"><div class="spin-label">左塞</div><div class="spin-pad" id="spin-pad" tabindex="0" role="slider" aria-label="杆头击点，方向键调整，高杆向上低杆向下" aria-valuemin="-85" aria-valuemax="85" aria-valuenow="0"><canvas id="spin-ball" width="94" height="94" aria-hidden="true"></canvas><span class="spin-line horizontal"></span><span class="spin-line vertical"></span><span class="spin-marker" id="spin-marker"></span><span class="spin-top">高杆</span><span class="spin-bottom">低杆</span></div><div class="spin-label">右塞</div><span id="spin-description">中杆<br><small>不加塞</small></span></div></div>
         <div class="elevation-control"><div class="control-heading"><label for="kind">杆法</label><select id="kind"><option value="normal">平杆</option><option value="jump">跳球</option><option value="masse">扎杆</option></select></div><div class="elevation-heading"><label for="elevation">抬杆角度</label><output id="elevation-value">0°</output></div><input id="elevation" type="range" min="0" max="82" step="0.1" value="0"><small id="elevation-note">平杆 · 调整击点控制跟进与回拉</small></div>
         <button class="strike-button" id="strike"><span>出杆 ${icon('arrow')}</span><small>SPACE / 空格</small></button>
       </section>
@@ -35,7 +36,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <p class="assistant-intro">选一颗球，一个洞口。<br>探索这一杆的更多可能。</p>
       <div class="assist-field"><label for="target"><span class="step-number">01</span>目标球</label><select id="target"></select></div>
       <div class="assist-field"><label><span class="step-number">02</span>目标洞口 <span id="pocket-name">右上袋</span></label><div class="pocket-map" aria-label="选择目标洞口">${POCKETS.map((p, i) => `<button class="pocket-choice pocket-${i}" data-pocket="${i}" aria-label="${p.name}袋" title="${p.name}袋"></button>`).join('')}<span class="map-cross">＋</span><span class="map-caption">点击洞口选择</span></div></div>
-      <div class="assist-field"><label for="sort"><span class="step-number">03</span>方案偏好</label><select id="sort"><option value="balanced">综合推荐</option><option value="simple">复杂度最低</option><option value="position">下一杆优势优先</option><option value="robust">容错程度优先</option></select></div>
+      <div class="assist-field"><label for="sort"><span class="step-number">03</span>方案偏好</label><select id="sort"><option value="balanced">综合推荐</option><option value="simple">复杂度最低</option><option value="position">下一杆优势优先</option><option value="robust">容错程度优先</option><option value="fancy">最花哨</option></select></div>
       <label class="auto-control"><div><strong>全自动执行</strong><small>搜索完成后执行首选方案</small></div><input id="auto" type="checkbox" role="switch"><span class="switch-track"></span></label>
       <label class="auto-control gpu-control"><div><strong>GPU 加速（可选）</strong><small id="gpu-status" aria-live="polite">默认 CPU 搜索；GPU 批量试算后仍精确验证</small></div><input id="gpu-search" type="checkbox" role="switch"><span class="switch-track"></span></label>
       <button class="search-button" id="search">${icon('spark')} 搜索击球方案 <span>↗</span></button>
@@ -70,13 +71,21 @@ const spinSurface = new BallSurfaceRenderer();
 function drawSpinBall() {
   spinContext.clearRect(0, 0, spinCanvas.width, spinCanvas.height);
   const cue = balls.find(b => b.id === 0);
-  if (cue) spinSurface.draw(spinContext, cue, spinCanvas.width / 2, spinCanvas.height / 2, spinCanvas.width * 0.45, true, cueBallView(shot.angle, shot.elevation));
+  if (cue) spinSurface.draw(spinContext, cue, spinCanvas.width / 2, spinCanvas.height / 2, spinCanvas.width * 0.45, $<HTMLInputElement>('cue-marks').checked, cueBallView(shot.angle, shot.elevation));
 }
 const saveHistory = () => { history.push({ balls: copyState(balls), rules: structuredClone(rules), shot: { ...shot }, chain: [...lastChain] }); if (history.length > 40) history.shift(); };
 function toast(message: string) { $('toast').textContent = message; $('toast').classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('visible'), 3300); }
 function invalidate() { if (searching) cancelSearch(); plans = []; selected = null; preview = null; $('search-time').textContent = '等待搜索'; renderPlans(); }
 function changeShot() { preview = null; selected = null; updateShotUI(); if (plans.length) renderPlans(); }
+let powerRangeMax = EXTENDED_POWER_START;
 function updateShotUI() {
+  const unlimited = !!shot.unlimitedPower;
+  $<HTMLInputElement>('unlimited-power').checked = unlimited;
+  if (unlimited) powerRangeMax = Math.max(powerRangeMax, Math.ceil(shot.power / 100) * 100);
+  $<HTMLInputElement>('power').max = String(unlimited ? powerRangeMax : 100);
+  $('extended-power-controls').hidden = !unlimited;
+  $<HTMLInputElement>('power-number').value = String(Number(shot.power.toFixed(2)));
+  $('power-range-label').textContent = `${unlimited ? powerRangeMax : 100}% 强击`;
   $<HTMLInputElement>('power').value = String(shot.power); $('power-value').innerHTML = `${Math.round(shot.power)}<span>%</span>`;
   $<HTMLInputElement>('angle').value = String(Math.round(((shot.angle * 180 / Math.PI + 360) % 360) * 100) / 100);
   $<HTMLSelectElement>('kind').value = shot.kind; $<HTMLInputElement>('elevation').value = String(shot.elevation); $('elevation-value').textContent = `${Number(shot.elevation.toFixed(1))}°`;
@@ -102,7 +111,7 @@ function updateUI() {
   $<HTMLSelectElement>('target').value = String(target);
   $('pocket-name').textContent = `${pocketName(pocket)}袋`; document.querySelectorAll<HTMLButtonElement>('[data-pocket]').forEach(b => { b.classList.toggle('selected', Number(b.dataset.pocket) === pocket); b.setAttribute('aria-pressed', String(Number(b.dataset.pocket) === pocket)); });
   const unavailable = busy() || searching || edit || placeCue || rules.ballInHand || rules.winner !== null || !!balls.find(b => b.id === 0)?.pocketed;
-  for (const id of ['power', 'angle', 'kind', 'elevation', 'reset-spin', 'target', 'sort', 'gpu-search']) $<HTMLInputElement>(id).disabled = busy() || searching;
+  for (const id of ['power', 'angle', 'kind', 'elevation', 'reset-spin', 'target', 'sort', 'gpu-search', 'unlimited-power', 'power-number', 'expand-power']) $<HTMLInputElement>(id).disabled = busy() || searching;
   $('spin-pad').setAttribute('aria-disabled', String(busy() || searching));
   $<HTMLButtonElement>('strike').disabled = unavailable; $<HTMLButtonElement>('preview').disabled = unavailable;
   $<HTMLButtonElement>('search').disabled = unavailable; $<HTMLButtonElement>('undo').disabled = !history.length || busy();
@@ -119,7 +128,7 @@ function setPocket(id: number) { if (busy() || searching) return; if (pocket !==
 function setTarget(id: number) { if (busy() || searching) return; if (target !== id) { target = id; invalidate(); } updateUI(); }
 function loadScene(name: SceneName, mode = rules.mode) {
   if (busy()) return; cancelSearch(); loaded = scene(name, mode); balls = loaded.balls; rules = loaded.rules; target = loaded.target; pocket = loaded.pocket;
-  shot = { angle: 0, power: name === 'rack' ? 80 : 35, tipX: 0, tipY: 0, elevation: 0, kind: 'normal' };
+  shot = { angle: 0, power: name === 'rack' ? 80 : 35, tipX: 0, tipY: 0, elevation: 0, kind: 'normal', ...($<HTMLInputElement>('unlimited-power').checked ? { unlimitedPower: true } : {}) };
   if (name === 'jump') { shot.kind = 'jump'; shot.elevation = 48; shot.power = 48; }
   if (name === 'masse') { shot.kind = 'masse'; shot.elevation = 68; shot.tipX = 0.6; shot.tipY = -0.25; shot.power = 48; }
   const cue = balls.find(b => b.id === 0)!, t = balls.find(b => b.id === target)!; shot.angle = Math.atan2(t.y - cue.y, t.x - cue.x);
@@ -164,7 +173,7 @@ function startSearch() {
   };
   worker.onerror = () => { cancelSearch(); toast('搜索未能运行，请刷新页面后重试'); };
   worker.postMessage({ id, balls: copyState(balls), rules: { ...rules, calledPocket: pocket }, target, pocket, sort: $<HTMLSelectElement>('sort').value as SortMode,
-    useGpu: $<HTMLInputElement>('gpu-search').checked });
+    useGpu: $<HTMLInputElement>('gpu-search').checked, unlimitedPower: !!shot.unlimitedPower, searchPowerMax: Math.max(EXTENDED_POWER_START, powerRangeMax, shot.power) });
 }
 function choosePlan(id: string) {
   const plan = plans.find(p => p.id === id); if (!plan || busy() || searching) return;
@@ -179,6 +188,22 @@ function renderPlans() {
 }
 
 $<HTMLInputElement>('power').oninput = e => { shot.power = Number((e.target as HTMLInputElement).value); changeShot(); };
+$<HTMLInputElement>('unlimited-power').onchange = e => {
+  if (busy() || searching) return;
+  if ((e.target as HTMLInputElement).checked) shot.unlimitedPower = true;
+  else { delete shot.unlimitedPower; shot.power = Math.min(100, shot.power); }
+  invalidate(); updateShotUI(); updateUI();
+};
+$<HTMLInputElement>('power-number').onchange = e => {
+  if (busy() || searching || !shot.unlimitedPower) return;
+  const value = Number((e.target as HTMLInputElement).value);
+  if (Number.isFinite(value) && value >= 1) shot.power = value;
+  changeShot();
+};
+$('expand-power').onclick = () => {
+  if (busy() || searching || !shot.unlimitedPower) return;
+  powerRangeMax *= 2; invalidate(); updateShotUI(); updateUI();
+};
 $<HTMLInputElement>('angle').oninput = e => { const n = Number((e.target as HTMLInputElement).value); if (Number.isFinite(n)) { shot.angle = n * Math.PI / 180; preview = null; selected = null; } };
 $<HTMLInputElement>('elevation').oninput = e => { shot.elevation = Number((e.target as HTMLInputElement).value); if (shot.elevation > 35 && shot.kind === 'normal') shot.kind = 'masse'; changeShot(); };
 $<HTMLSelectElement>('kind').onchange = e => { shot.kind = (e.target as HTMLSelectElement).value as Shot['kind']; shot.elevation = shot.kind === 'jump' ? 48 : shot.kind === 'masse' ? 68 : 0; if (shot.kind === 'masse' && Math.abs(shot.tipX) < 0.2) shot.tipX = 0.55; changeShot(); };
@@ -266,7 +291,7 @@ function frame(now: number) {
   if (feedback.advance(elapsed)) {
     world = new PhysicsWorld(balls, shot, true); accumulator = 0;
     const cue = preShot.find(b => b.id === 0)!;
-    audio.play('cue', 0.2 + shot.power / 100 * 6.2, cue.x); updateUI();
+    audio.play('cue', 0.2 + shotPower(shot) / 100 * 6.2, cue.x); updateUI();
   }
   if (world) {
     accumulator += elapsed * 1.5;

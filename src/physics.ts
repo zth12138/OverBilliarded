@@ -1,5 +1,6 @@
 import type { Ball, PhysicsEvent, Simulation, Shot, TrailPoint } from './types';
 import { integrateOrientation } from './rotation';
+import { shotPower } from './power';
 
 // SI units; play, previews, and search share this fixed-step engine.
 export const TABLE = { w: 2.54, h: 1.27, r: 0.028575, pocketR: 0.056, dt: 1 / 240 };
@@ -53,7 +54,7 @@ export function legalPlacement(balls: Ball[], id: number, x: number, y: number, 
 export function applyShot(balls: Ball[], shot: Shot) {
   const cue = balls.find(b => b.id === 0);
   if (!cue || cue.pocketed) throw new Error('请先放置白球');
-  const R = TABLE.r, speed = 0.2 + clamp(shot.power, 1, 100) / 100 * 6.2;
+  const R = TABLE.r, speed = 0.2 + shotPower(shot) / 100 * 6.2;
   const a = shot.angle, dx = Math.cos(a), dy = Math.sin(a), sx = -dy, sy = dx;
   let tx = clamp(shot.tipX, -0.85, 0.85), ty = clamp(shot.tipY, -0.85, 0.85);
   const len = Math.hypot(tx, ty); if (len > 0.85) { tx *= 0.85 / len; ty *= 0.85 / len; }

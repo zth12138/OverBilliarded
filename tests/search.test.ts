@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { simulate, TABLE } from '../src/physics';
-import { adjudicate } from '../src/rules';
+import { ball, simulate, TABLE } from '../src/physics';
+import { adjudicate, freshRules } from '../src/rules';
 import { scene } from '../src/scenes';
-import { planScore, searchPlans } from '../src/search';
+import { coarseShots, planScore, searchPlans, shotKey, type Route } from '../src/search';
 
 for (const name of ['cut', 'bank', 'kick', 'combo', 'black'] as const) test(`search finds legal ${name} plans for the exact called pocket`, () => {
   const state = scene(name, 'practice'), request = { id: 1, ...state, sort: 'balanced' as const };
@@ -76,4 +76,49 @@ test('ranking preferences change the recommended tradeoff', () => {
   assert.ok(planScore(easy, 'simple') > planScore(position, 'simple'));
   assert.ok(planScore(position, 'position') > planScore(easy, 'position'));
   assert.ok(planScore(robust, 'robust') > planScore(position, 'robust'));
+});
+
+test('fancy ranking prefers complex techniques, unusual routes and shots affecting more balls', () => {
+  const ordinaryOutcome = simulate([ball(0, 0.5, 0.5), ball(1, 1, 0.5)], { angle: 0, power: 35, tipX: 0, tipY: 0, elevation: 0, kind: 'normal' });
+  const spectacularOutcome = structuredClone(ordinaryOutcome);
+  spectacularOutcome.events = [
+    { type: 'contact', time: 0.1, ball: 0, other: 1 },
+    { type: 'contact', time: 0.2, ball: 1, other: 2 },
+    { type: 'rail', time: 0.3, ball: 2, rail: '上库' },
+    { type: 'pocket', time: 0.4, ball: 3, pocket: 1 },
+  ];
+  const ordinary = { complexity: 10, position: 50, robustness: 50, route: '直接进球', shot: { kind: 'normal' as const, angle: 0, power: 35, tipX: 0, tipY: 0, elevation: 0 }, outcome: ordinaryOutcome };
+  const spectacular = { complexity: 85, position: 50, robustness: 50, route: '组合球 · 1 → 3', shot: { kind: 'masse' as const, angle: 0, power: 80, tipX: 0.7, tipY: -0.4, elevation: 70 }, outcome: spectacularOutcome };
+  assert.ok(planScore(spectacular, 'fancy') > planScore(ordinary, 'fancy'));
+  assert.ok(planScore(ordinary, 'balanced') > planScore(spectacular, 'balanced'));
+});
+
+test('extended-power grids retain the ordinary grid and cover every stroke through the chosen range', () => {
+  for (const kind of ['normal', 'jump', 'masse'] as const) {
+    const route: Route = { kind, angle: 0, contact: { x: 1, y: 0.5 }, length: 1, cut: 1, label: 'test' };
+    const ordinary = coarseShots(route), extended = coarseShots(route, { unlimitedPower: true, searchPowerMax: 600 });
+    const keys = new Set(extended.map(shot => shotKey({ ...shot, unlimitedPower: false })));
+    assert.ok(ordinary.every(shot => keys.has(shotKey(shot))));
+    assert.ok(extended.some(shot => shot.power === 600));
+    assert.ok(extended.some(shot => shot.power === 125));
+    assert.ok(extended.every(shot => shot.unlimitedPower && shot.power <= 600));
+    assert.ok(ordinary.every(shot => shot.power <= 100 && !shot.unlimitedPower));
+  }
+});
+
+test('high-energy search plans keep their power through refinement, verification and replay', () => {
+  const balls = [ball(0, 1.27, 0.9), ball(1, 1.27, 0.4)], rules = freshRules('practice');
+  rules.breakShot = false;
+  const route: Route = { kind: 'normal', angle: -Math.PI / 2, contact: { x: 1.27, y: 0.45715 }, length: 0.9, cut: 1, label: 'test' };
+  const request = { id: 12, balls, rules, target: 1, pocket: 1, sort: 'balanced' as const, unlimitedPower: true };
+  const shots = [125, 160, 220].map(power => ({ angle: route.angle, power, tipX: 0, tipY: 0, elevation: 0, kind: 'normal' as const, unlimitedPower: true }));
+  const plans = searchPlans(request, undefined, [{ route, shots }]);
+  assert.ok(plans.some(p => p.shot.power > 100));
+  for (const plan of plans) {
+    assert.equal(plan.shot.unlimitedPower, true);
+    assert.deepEqual(plan.outcome, simulate(balls, plan.shot, true));
+    assert.equal(adjudicate(balls, plan.outcome.balls, plan.outcome.events, { ...rules, calledPocket: 1 }).foul, false);
+  }
+  const limited = searchPlans({ ...request, unlimitedPower: false }, undefined, [{ route, shots }]);
+  assert.ok(limited.every(plan => plan.shot.power <= 100 && !plan.shot.unlimitedPower));
 });

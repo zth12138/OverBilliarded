@@ -15,7 +15,7 @@ self.onmessage = async (event: MessageEvent<SearchRequest>) => {
     let prepared: Parameters<typeof searchPlans>[2];
     if (request.useGpu && valid) {
       backend('gpu', '正在初始化 GPU 轨迹试算…');
-      const grids = generateRoutes(request).map(route => ({ route, shots: coarseShots(route) }));
+      const grids = generateRoutes(request).map(route => ({ route, shots: coarseShots(route, request) }));
       if (grids.length) {
         const result = await gpuScreen(request, grids, (done, total) => {
           backend('gpu', `GPU 轨迹试算 ${done} / ${total} 组`);

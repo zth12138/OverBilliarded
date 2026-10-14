@@ -11,6 +11,7 @@ export interface Ball {
 export interface Shot {
   angle: number; power: number; tipX: number; tipY: number;
   elevation: number; kind: ShotKind;
+  unlimitedPower?: boolean;
 }
 export interface PhysicsEvent {
   type: 'contact' | 'rail' | 'pocket' | 'off'; time: number;
@@ -33,7 +34,7 @@ export interface Adjudication {
   foul: boolean; reasons: string[]; winner: 0 | 1 | null;
   continuation: boolean; assigned: Group | null; respotEight: boolean;
 }
-export type SortMode = 'balanced' | 'simple' | 'position' | 'robust';
+export type SortMode = 'balanced' | 'simple' | 'position' | 'robust' | 'fancy';
 export interface Plan {
   id: string; shot: Shot; route: string; chain: string[];
   complexity: number; position: number; robustness: number; score: number;
@@ -44,6 +45,9 @@ export interface SearchRequest {
   target: number; pocket: number; sort: SortMode;
   // Optional WebGPU coarse-screening. The CPU search remains the fallback.
   useGpu?: boolean;
+  unlimitedPower?: boolean;
+  // Finite exploration range for this search; manual power has no fixed ceiling.
+  searchPowerMax?: number;
 }
 export type SearchUpdate =
   | { type: 'backend'; id: number; backend: 'cpu' | 'gpu'; message: string }
