@@ -82,6 +82,22 @@ try {
   await page.waitForFunction(() => !window.__cueLab.getState().searching);
   assert.ok((await state()).plans.some(p => p.route.includes('翻袋')));
 
+  for (const kind of ['jump', 'masse']) {
+    await page.selectOption('#scene', kind); await page.click('#search');
+    await page.waitForFunction(() => !window.__cueLab.getState().searching, { timeout: 30000 });
+    const specialSearch = await state(), index = specialSearch.plans.findIndex(p => p.shot.kind === kind);
+    assert.ok(index >= 0, `${kind} search should return a playable special stroke`);
+    const plan = specialSearch.plans[index];
+    await page.locator('.plan-select').nth(index).click();
+    assert.deepEqual((await state()).shot, plan.shot);
+    assert.equal(await page.locator('#kind').inputValue(), kind);
+    assert.equal(Number(await page.locator('#elevation').inputValue()), Number(plan.shot.elevation.toFixed(1)));
+    assert.match(await page.locator('.plan-card').nth(index).innerText(), /抬杆/);
+    await page.locator('.execute-plan').nth(index).click(); await idle();
+    assert.deepEqual((await state()).balls, plan.outcome.balls);
+    assert.equal((await state()).balls.find(b => b.id === specialSearch.target).pocketed, true);
+  }
+
   await page.selectOption('#scene', 'combo'); await page.click('#search');
   await page.click('#cancel-search'); assert.equal((await state()).searching, false);
   assert.equal(await page.locator('#strike').isEnabled(), true);
@@ -103,6 +119,14 @@ try {
   const foul = await state(); assert.equal(foul.rules.player, 1); assert.equal(foul.rules.ballInHand, true);
   const box = await page.locator('#table').boundingBox();
   const scale = Math.min((box.width - 108) / 2.54, (box.height - 108) / 1.27), ox = (box.width - 2.54 * scale) / 2, oy = (box.height - 1.27 * scale) / 2;
+  // Invalid free-ball placement must preserve the foul state and keep strike locked.
+  const object = foul.balls.find(b => b.id !== 0 && !b.pocketed);
+  for (const [x, y] of [[object.x, object.y], [0.04, 0.04], [-0.02, 0.3]]) {
+    await page.mouse.click(box.x + ox + x * scale, box.y + oy + y * scale);
+    const rejected = await state();
+    assert.equal(rejected.rules.ballInHand, true); assert.equal(rejected.rules.player, 1);
+    assert.deepEqual(rejected.balls, foul.balls); assert.equal(await page.locator('#strike').isDisabled(), true);
+  }
   await page.mouse.click(box.x + ox + 0.5 * scale, box.y + oy + 0.3 * scale);
   assert.equal((await state()).rules.ballInHand, false); assert.equal(await page.locator('#strike').isEnabled(), true);
 
@@ -124,5 +148,5 @@ try {
   await page.waitForTimeout(100);
   assert.deepEqual((await state()).balls, finished.balls);
   assert.deepEqual(errors, []);
-  console.log('Browser checks passed: play, exact preview execution, plans, bank, cancellation, editing, undo, automatic shot, black win, two-player foul/free ball, help, laptop layout.');
+  console.log('Browser checks passed: play, exact preview execution, plans, bank, automatic jump/masse/elevation and execution, cancellation, editing, undo, automatic shot, black win, two-player foul/free ball, help, laptop layout.');
 } finally { await browser.close(); server?.kill(); }

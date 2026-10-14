@@ -42,8 +42,11 @@ export interface Plan {
 export interface SearchRequest {
   id: number; balls: Ball[]; rules: RuleState;
   target: number; pocket: number; sort: SortMode;
+  // Optional WebGPU coarse-screening. The CPU search remains the fallback.
+  useGpu?: boolean;
 }
 export type SearchUpdate =
+  | { type: 'backend'; id: number; backend: 'cpu' | 'gpu'; message: string }
   | { type: 'progress'; id: number; checked: number; total: number; found: number }
   | { type: 'done'; id: number; plans: Plan[]; checked: number; elapsed: number }
   | { type: 'error'; id: number; message: string };

@@ -24,7 +24,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <section class="shot-console" aria-label="击球控制">
         <div class="power-control"><div class="control-heading"><label for="power">击球力度</label><output id="power-value">45<span>%</span></output></div><input id="power" type="range" min="1" max="100" value="45"><div class="range-labels"><span>轻推</span><span>强击</span></div><div class="angle-row"><label for="angle">方向</label><input id="angle" type="number" step="0.1" value="0"><span>°</span><button id="preview" class="inline-button">预览本杆</button></div></div>
         <div class="spin-control"><div class="control-heading"><span>杆头击点</span><span class="spin-heading-actions"><label class="cue-mark-toggle" title="显示随白球滚动的六个红点，观察高低杆与侧旋"><input id="cue-marks" type="checkbox"> 红点</label><button class="inline-button" id="reset-spin">回中</button></span></div><div class="spin-pad-row"><div class="spin-label">左塞</div><div class="spin-pad" id="spin-pad" tabindex="0" role="slider" aria-label="杆头击点，方向键调整，高杆向上低杆向下" aria-valuemin="-85" aria-valuemax="85" aria-valuenow="0"><canvas id="spin-ball" width="94" height="94" aria-hidden="true"></canvas><span class="spin-line horizontal"></span><span class="spin-line vertical"></span><span class="spin-marker" id="spin-marker"></span><span class="spin-top">高杆</span><span class="spin-bottom">低杆</span></div><div class="spin-label">右塞</div><span id="spin-description">中杆<br><small>不加塞</small></span></div></div>
-        <div class="elevation-control"><div class="control-heading"><label for="kind">杆法</label><select id="kind"><option value="normal">平杆</option><option value="jump">跳球</option><option value="masse">扎杆</option></select></div><div class="elevation-heading"><label for="elevation">抬杆角度</label><output id="elevation-value">0°</output></div><input id="elevation" type="range" min="0" max="82" value="0"><small id="elevation-note">平杆 · 调整击点控制跟进与回拉</small></div>
+        <div class="elevation-control"><div class="control-heading"><label for="kind">杆法</label><select id="kind"><option value="normal">平杆</option><option value="jump">跳球</option><option value="masse">扎杆</option></select></div><div class="elevation-heading"><label for="elevation">抬杆角度</label><output id="elevation-value">0°</output></div><input id="elevation" type="range" min="0" max="82" step="0.1" value="0"><small id="elevation-note">平杆 · 调整击点控制跟进与回拉</small></div>
         <button class="strike-button" id="strike"><span>出杆 ${icon('arrow')}</span><small>SPACE / 空格</small></button>
       </section>
       <section class="practice-toolbar" id="practice-toolbar"><div><span class="eyebrow">PRACTICE</span><select id="scene" aria-label="练习局面"><option value="rack">标准开球</option><option value="cut">直球与走位</option><option value="bank">翻袋练习</option><option value="kick">单库解球</option><option value="combo">组合球练习</option><option value="jump">跳球练习</option><option value="masse">扎杆练习</option><option value="black">黑八收尾</option></select></div><button id="edit" class="text-button">${icon('settings')} 自由摆球</button><div class="edit-tools" id="edit-tools" hidden><select id="edit-ball" aria-label="选择摆放的球"></select><button id="restore-ball" class="inline-button">放回球桌</button><button id="remove-ball" class="inline-button">移出球桌</button></div></section>
@@ -37,6 +37,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <div class="assist-field"><label><span class="step-number">02</span>目标洞口 <span id="pocket-name">右上袋</span></label><div class="pocket-map" aria-label="选择目标洞口">${POCKETS.map((p, i) => `<button class="pocket-choice pocket-${i}" data-pocket="${i}" aria-label="${p.name}袋" title="${p.name}袋"></button>`).join('')}<span class="map-cross">＋</span><span class="map-caption">点击洞口选择</span></div></div>
       <div class="assist-field"><label for="sort"><span class="step-number">03</span>方案偏好</label><select id="sort"><option value="balanced">综合推荐</option><option value="simple">复杂度最低</option><option value="position">下一杆优势优先</option><option value="robust">容错程度优先</option></select></div>
       <label class="auto-control"><div><strong>全自动执行</strong><small>搜索完成后执行首选方案</small></div><input id="auto" type="checkbox" role="switch"><span class="switch-track"></span></label>
+      <label class="auto-control gpu-control"><div><strong>GPU 加速（可选）</strong><small id="gpu-status" aria-live="polite">默认 CPU 搜索；GPU 批量试算后仍精确验证</small></div><input id="gpu-search" type="checkbox" role="switch"><span class="switch-track"></span></label>
       <button class="search-button" id="search">${icon('spark')} 搜索击球方案 <span>↗</span></button>
       <div class="search-progress" id="search-progress" hidden><div><span id="progress-text">搜索中…</span><button id="cancel-search" class="inline-button">取消</button></div><progress id="progress" max="100" value="0"></progress></div>
       <div class="results-heading"><h3>候选方案 <span id="plan-count">00</span></h3><span id="search-time">等待搜索</span></div>
@@ -45,7 +46,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     </aside>
   </main>
   <footer class="app-footer"><span>CUE LAB <span>·</span> 每一杆，探索更多可能。</span><span>中式八球 · 本地双人 / 自由练习</span></footer>
-  <dialog id="help-dialog"><button class="dialog-close icon-button" aria-label="关闭帮助">×</button><div class="eyebrow">QUICK GUIDE</div><h2>上手这一杆</h2><p>点击球桌空白处瞄准，点击彩球选择目标；点击洞口指定入袋位置。调整力度、击点和抬杆角度后，按空格或「出杆」。← → 微调方向，按住 Shift 可更精细地调整。</p><p>「预览本杆」显示当前参数的模拟路线。「搜索击球方案」搜索直球、单库翻袋、单库解球和简单组合球。选择方案可查看击球链条和白球落点；打开全自动后，搜索完成会执行首选方案。</p><h3>本版规则约定</h3><p>开球需进球或至少四颗目标球碰库；开球不分组，黑八入袋重置。开放球局不得先碰黑八；非开球时合法打进单一组别后分组，两组同进则仍开放。分组后须先碰己方球，碰球后须进球或碰库。犯规给对方全台自由球；打飞的普通目标球不重置。</p><p>打黑八前必须已清空己方球，并指定洞口。提前进黑八、黑八入错袋、打飞黑八或进黑八同时犯规均判负。本版采用以上固定的休闲规则约定，不含裁判认定的推杆、连击和故意犯规。</p><h3>练习与杆法</h3><p>练习模式保留规则提示，由同一人连续操作。自由摆球可拖动球，或从球号菜单放回、移出球。高低杆和左右塞由击点控制；跳球选择跳球杆法并抬杆，扎杆选择扎杆后抬杆并加偏心击点。旋转与离台采用近似物理模型，复杂跳球和扎杆暂不参与自动搜索。</p><h3>快捷键</h3><p>空格：出杆 · ← →：微调方向 · Ctrl+Z：撤销 · Esc：取消搜索或退出摆球。输入框内不触发出杆快捷键。</p></dialog>
+  <dialog id="help-dialog"><button class="dialog-close icon-button" aria-label="关闭帮助">×</button><div class="eyebrow">QUICK GUIDE</div><h2>上手这一杆</h2><p>点击球桌空白处瞄准，点击彩球选择目标；点击洞口指定入袋位置。调整力度、击点和抬杆角度后，按空格或「出杆」。← → 微调方向，按住 Shift 可更精细地调整。</p><p>「预览本杆」显示当前参数的模拟路线。「搜索击球方案」搜索直球、单库翻袋、单库解球、简单组合球，以及跳球和扎杆。击点、力度、方向与抬杆角度均由程序自动搜索。选择方案可查看击球链条和白球落点；打开全自动后，搜索完成会执行首选方案。</p><h3>本版规则约定</h3><p>开球需进球或至少四颗目标球碰库；开球不分组，黑八入袋重置。开放球局不得先碰黑八；非开球时合法打进单一组别后分组，两组同进则仍开放。分组后须先碰己方球，碰球后须进球或碰库。犯规给对方全台自由球；打飞的普通目标球不重置。</p><p>打黑八前必须已清空己方球，并指定洞口。提前进黑八、黑八入错袋、打飞黑八或进黑八同时犯规均判负。本版采用以上固定的休闲规则约定，不含裁判认定的推杆、连击和故意犯规。</p><h3>练习与杆法</h3><p>练习模式保留规则提示，由同一人连续操作。自由摆球可拖动球，或从球号菜单放回、移出球。高低杆和左右塞由击点控制；跳球选择跳球杆法并抬杆，扎杆选择扎杆后抬杆并加偏心击点。旋转与离台采用近似物理模型。智能辅助会比较不同杆法，并细化抬杆角度与组合击点；有限搜索仍可能遗漏复杂解法。</p><h3>快捷键</h3><p>空格：出杆 · ← →：微调方向 · Ctrl+Z：撤销 · Esc：取消搜索或退出摆球。输入框内不触发出杆快捷键。</p></dialog>
   <div class="toast" id="toast" role="status"></div>
 `;
 
@@ -78,7 +79,7 @@ function changeShot() { preview = null; selected = null; updateShotUI(); if (pla
 function updateShotUI() {
   $<HTMLInputElement>('power').value = String(shot.power); $('power-value').innerHTML = `${Math.round(shot.power)}<span>%</span>`;
   $<HTMLInputElement>('angle').value = String(Math.round(((shot.angle * 180 / Math.PI + 360) % 360) * 100) / 100);
-  $<HTMLSelectElement>('kind').value = shot.kind; $<HTMLInputElement>('elevation').value = String(shot.elevation); $('elevation-value').textContent = `${Math.round(shot.elevation)}°`;
+  $<HTMLSelectElement>('kind').value = shot.kind; $<HTMLInputElement>('elevation').value = String(shot.elevation); $('elevation-value').textContent = `${Number(shot.elevation.toFixed(1))}°`;
   $('spin-marker').style.left = `${50 + shot.tipX * 46}%`; $('spin-marker').style.top = `${50 - shot.tipY * 46}%`;
   $('spin-pad').setAttribute('aria-valuenow', String(Math.round(shot.tipY * 100)));
   $('spin-pad').setAttribute('aria-valuetext', `左右 ${shot.tipX.toFixed(2)}，高低 ${shot.tipY.toFixed(2)}`);
@@ -101,7 +102,7 @@ function updateUI() {
   $<HTMLSelectElement>('target').value = String(target);
   $('pocket-name').textContent = `${pocketName(pocket)}袋`; document.querySelectorAll<HTMLButtonElement>('[data-pocket]').forEach(b => { b.classList.toggle('selected', Number(b.dataset.pocket) === pocket); b.setAttribute('aria-pressed', String(Number(b.dataset.pocket) === pocket)); });
   const unavailable = busy() || searching || edit || placeCue || rules.ballInHand || rules.winner !== null || !!balls.find(b => b.id === 0)?.pocketed;
-  for (const id of ['power', 'angle', 'kind', 'elevation', 'reset-spin', 'target', 'sort']) $<HTMLInputElement>(id).disabled = busy() || searching;
+  for (const id of ['power', 'angle', 'kind', 'elevation', 'reset-spin', 'target', 'sort', 'gpu-search']) $<HTMLInputElement>(id).disabled = busy() || searching;
   $('spin-pad').setAttribute('aria-disabled', String(busy() || searching));
   $<HTMLButtonElement>('strike').disabled = unavailable; $<HTMLButtonElement>('preview').disabled = unavailable;
   $<HTMLButtonElement>('search').disabled = unavailable; $<HTMLButtonElement>('undo').disabled = !history.length || busy();
@@ -150,17 +151,20 @@ function startSearch() {
   plans = []; selected = null; preview = null; searching = true; const id = ++requestId;
   $('search-progress').hidden = false; $<HTMLProgressElement>('progress').value = 0; $('progress-text').textContent = '生成候选路线…'; $('search-time').textContent = '搜索中'; renderPlans(); updateUI();
   worker = new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });
+  let backend = 'CPU';
   worker.onmessage = (event: MessageEvent<SearchUpdate>) => {
     const data = event.data; if (data.id !== requestId) return;
-    if (data.type === 'progress') { $<HTMLProgressElement>('progress').value = data.checked / data.total * 100; $('progress-text').textContent = `已试算 ${data.checked} 组 · 找到 ${data.found} 个候选`; }
+    if (data.type === 'backend') { backend = data.backend === 'gpu' ? 'GPU + CPU' : 'CPU'; $('gpu-status').textContent = data.message; $('progress-text').textContent = data.message; }
+    else if (data.type === 'progress') { $<HTMLProgressElement>('progress').value = data.checked / data.total * 100; $('progress-text').textContent = `${backend} · 已精确试算 ${data.checked} 组 · 找到 ${data.found} 个候选`; }
     else if (data.type === 'done') {
-      worker?.terminate(); worker = null; searching = false; $('search-progress').hidden = true; plans = data.plans; $('search-time').textContent = `${(data.elapsed / 1000).toFixed(1)} 秒 · ${data.checked} 次`;
+      worker?.terminate(); worker = null; searching = false; $('search-progress').hidden = true; plans = data.plans; $('search-time').textContent = `${backend} · ${(data.elapsed / 1000).toFixed(1)} 秒 · ${data.checked} 次`;
       if (plans.length) choosePlan(plans[0].id); else renderPlans(); updateUI();
       if (plans.length && $<HTMLInputElement>('auto').checked) { toast('已找到首选方案，自动执行'); strike(plans[0].shot); }
     } else { cancelSearch(); toast(`搜索失败：${data.message}`); }
   };
   worker.onerror = () => { cancelSearch(); toast('搜索未能运行，请刷新页面后重试'); };
-  worker.postMessage({ id, balls: copyState(balls), rules: { ...rules, calledPocket: pocket }, target, pocket, sort: $<HTMLSelectElement>('sort').value as SortMode });
+  worker.postMessage({ id, balls: copyState(balls), rules: { ...rules, calledPocket: pocket }, target, pocket, sort: $<HTMLSelectElement>('sort').value as SortMode,
+    useGpu: $<HTMLInputElement>('gpu-search').checked });
 }
 function choosePlan(id: string) {
   const plan = plans.find(p => p.id === id); if (!plan || busy() || searching) return;
@@ -171,7 +175,7 @@ function renderPlans() {
   if (!plans.length) {
     $('plans').innerHTML = `<div class="empty-state"><div class="empty-orbit"><span>${searching ? '⌕' : '↗'}</span></div><strong>${searching ? '正在探索击球路线' : $('search-time').textContent?.includes('次') ? '本次搜索未找到可行方案' : '下一杆，由你定义'}</strong><p>${searching ? '后台试算中，球桌保持响应。' : $('search-time').textContent?.includes('次') ? '可尝试其他洞口或调整球位。<br>当前搜索范围未覆盖所有可能打法。' : '选择目标球与洞口后开始搜索。<br>试试「直球与走位」练习局面。'}</p></div>`; return;
   }
-  $('plans').innerHTML = plans.map((p, index) => `<article class="plan-card ${selected?.id === p.id ? 'selected' : ''}" data-plan="${p.id}"><button class="plan-select" data-select-plan="${p.id}"><span class="plan-rank">${String(index + 1).padStart(2, '0')}</span><span><strong>${p.route}</strong><small>${Math.round(p.shot.power)}% 力度 · ${p.shot.tipY > 0.1 ? '高杆' : p.shot.tipY < -0.1 ? '低杆' : '中杆'}${Math.abs(p.shot.tipX) > 0.1 ? p.shot.tipX > 0 ? '右塞' : '左塞' : ''}</small></span><span class="legal-badge">合法</span></button><div class="plan-metrics"><span>复杂度 <b>${Math.round(p.complexity)}</b></span><span>走位 <b>${Math.round(p.position)}</b></span><span>容错 <b>${Math.round(p.robustness)}</b></span></div><details ${selected?.id === p.id ? 'open' : ''}><summary>击球链条与参数</summary><p class="chain">${p.chain.join(' → ')}</p><p class="plan-params">角度 ${((p.shot.angle * 180 / Math.PI + 360) % 360).toFixed(2)}° · 力度 ${p.shot.power.toFixed(1)}%<br>击点 (${p.shot.tipX.toFixed(2)}, ${p.shot.tipY.toFixed(2)}) · 抬杆 ${p.shot.elevation}°</p><button class="execute-plan" data-execute-plan="${p.id}">执行此方案 ↗</button></details></article>`).join('');
+  $('plans').innerHTML = plans.map((p, index) => `<article class="plan-card ${selected?.id === p.id ? 'selected' : ''}" data-plan="${p.id}"><button class="plan-select" data-select-plan="${p.id}"><span class="plan-rank">${String(index + 1).padStart(2, '0')}</span><span><strong>${p.route}</strong><small>${Math.round(p.shot.power)}% 力度 · 抬杆 ${Number(p.shot.elevation.toFixed(1))}° · ${p.shot.tipY > 0.1 ? '高杆' : p.shot.tipY < -0.1 ? '低杆' : '中杆'}${Math.abs(p.shot.tipX) > 0.1 ? p.shot.tipX > 0 ? '右塞' : '左塞' : ''}</small></span><span class="legal-badge">合法</span></button><div class="plan-metrics"><span>复杂度 <b>${Math.round(p.complexity)}</b></span><span>走位 <b>${Math.round(p.position)}</b></span><span>容错 <b>${Math.round(p.robustness)}</b></span></div><details ${selected?.id === p.id ? 'open' : ''}><summary>击球链条与参数</summary><p class="chain">${p.chain.join(' → ')}</p><p class="plan-params">角度 ${((p.shot.angle * 180 / Math.PI + 360) % 360).toFixed(2)}° · 力度 ${p.shot.power.toFixed(1)}%<br>击点 (${p.shot.tipX.toFixed(2)}, ${p.shot.tipY.toFixed(2)}) · ${p.shot.kind === 'jump' ? '跳球' : p.shot.kind === 'masse' ? '扎杆' : '平杆'} · 抬杆 ${Number(p.shot.elevation.toFixed(1))}°</p><button class="execute-plan" data-execute-plan="${p.id}">执行此方案 ↗</button></details></article>`).join('');
 }
 
 $<HTMLInputElement>('power').oninput = e => { shot.power = Number((e.target as HTMLInputElement).value); changeShot(); };

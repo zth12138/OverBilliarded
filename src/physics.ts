@@ -69,22 +69,59 @@ export function applyShot(balls: Ball[], shot: Shot) {
   cue.vz = shot.kind === 'jump' ? speed * Math.sin(elevation) * 0.52 : 0;
   cue.z = R;
 }
+type Impact = { time: number; a: Ball } & (
+  | { type: 'contact'; b: Ball }
+  | { type: 'rail'; seg: Cushion; nx: number; ny: number }
+  | { type: 'pocket'; pocket: number }
+  | { type: 'ground' | 'off' }
+);
+
+// Entry time for a moving point into a sphere. The near root is stable even
+// when starting almost in contact; separating motion never creates an impact.
+function sphereTime(dx: number, dy: number, dz: number, vx: number, vy: number, vz: number, radius: number): number | null {
+  const dot = dx * vx + dy * vy + dz * vz;
+  if (dot >= -1e-10) return null;
+  const c = dx * dx + dy * dy + dz * dz - radius * radius;
+  if (c <= 1e-12) return 0;
+  const speed2 = vx * vx + vy * vy + vz * vz, discriminant = dot * dot - speed2 * c;
+  return discriminant < 0 ? null : c / (-dot + Math.sqrt(discriminant));
+}
+
+function cushionTime(b: Ball, seg: Cushion, duration: number): { time: number; nx: number; ny: number } | null {
+  const R = TABLE.r, endX = b.x + b.vx * duration, endY = b.y + b.vy * duration;
+  if (Math.min(b.x, endX) > Math.max(seg.ax, seg.bx) + R || Math.max(b.x, endX) < Math.min(seg.ax, seg.bx) - R
+    || Math.min(b.y, endY) > Math.max(seg.ay, seg.by) + R || Math.max(b.y, endY) < Math.min(seg.ay, seg.by) - R) return null;
+  const sx = seg.bx - seg.ax, sy = seg.by - seg.ay, length = Math.hypot(sx, sy), tx = sx / length, ty = sy / length;
+  const dx = b.x - seg.ax, dy = b.y - seg.ay, along = dx * tx + dy * ty, normal = -dx * ty + dy * tx;
+  let hit: { time: number; nx: number; ny: number } | null = null;
+  for (const side of [1, -1]) {
+    const nx = -ty * side, ny = tx * side, vn = b.vx * nx + b.vy * ny;
+    if (vn >= -1e-10) continue;
+    const distance = normal * side, time = distance >= 0 && distance < R ? 0 : (R - distance) / vn;
+    const at = along + (b.vx * tx + b.vy * ty) * time;
+    if (time >= 0 && time <= duration && at >= 0 && at <= length && (!hit || time < hit.time)) hit = { time, nx, ny };
+  }
+  for (const [x, y] of [[seg.ax, seg.ay], [seg.bx, seg.by]]) {
+    const time = sphereTime(b.x - x, b.y - y, 0, b.vx, b.vy, 0, R);
+    if (time === null || time > duration || hit && time >= hit.time) continue;
+    const dx = b.x + b.vx * time - x, dy = b.y + b.vy * time - y, distance = Math.hypot(dx, dy);
+    if (distance > 1e-9) hit = { time, nx: dx / distance, ny: dy / distance };
+  }
+  return hit;
+}
+
 export class PhysicsWorld {
   balls: Ball[]; events: PhysicsEvent[] = []; time = 0; done = false; timedOut = false;
   trails: Record<number, TrailPoint[]> = {};
   private quiet = 0;
   private nextTrace = 0;
-  private lastEvents = new Map<string, number>();
   constructor(input: Ball[], shot?: Shot, private recordTrails = true) {
     this.balls = copyState(input);
     if (shot) applyShot(this.balls, shot);
     if (recordTrails) this.trace();
   }
-  private emit(event: Omit<PhysicsEvent, 'time'>, key: string) {
-    const last = this.lastEvents.get(key);
-    if (last !== undefined && this.time - last < 0.045) return;
-    this.lastEvents.set(key, this.time);
-    this.events.push({ ...event, time: this.time });
+  private emit(event: Omit<PhysicsEvent, 'time'>, time: number) {
+    this.events.push({ ...event, time });
   }
   private trace() {
     for (const b of this.balls) {
@@ -103,8 +140,7 @@ export class PhysicsWorld {
       if (b.pocketed) continue;
       if (b.vx === 0 && b.vy === 0 && b.vz === 0 && b.wx === 0 && b.wy === 0 && b.z <= R + 0.0001) { b.wz *= Math.exp(-1.05 * dt); continue; }
       if (b.z > R + 0.0001 || b.vz > 0.01) {
-        b.vz -= 9.81 * dt; b.z += b.vz * dt;
-        if (b.z <= R) { b.z = R; b.vz = Math.abs(b.vz) > 0.32 ? -b.vz * 0.2 : 0; b.vx *= 0.99; b.vy *= 0.99; }
+        b.vz -= 9.81 * dt;
       } else {
         b.z = R; b.vz = 0;
         const ux = b.vx - R * b.wy, uy = b.vy + R * b.wx;
@@ -122,72 +158,10 @@ export class PhysicsWorld {
         }
         b.wz *= Math.exp(-1.05 * dt);
       }
-      b.x += b.vx * dt; b.y += b.vy * dt;
-      let captured = false;
-      if (b.z < R + 0.012) {
-        for (let p = 0; p < POCKETS.length; p++) if (Math.hypot(b.x - POCKETS[p].x, b.y - POCKETS[p].y) < TABLE.pocketR - 0.006) {
-          const entry = { ...b }, speed = Math.hypot(b.vx, b.vy, b.vz);
-          b.pocketed = true; b.vx = b.vy = b.vz = 0;
-          this.emit({ type: 'pocket', ball: b.id, pocket: p, speed, entry }, `p${b.id}`); captured = true; break;
-        }
-      }
-      if (captured) continue;
-      if (b.z < R + 0.04) this.cushions(b);
-      if (b.x < -0.13 || b.x > W + 0.13 || b.y < -0.13 || b.y > H + 0.13) {
-        b.pocketed = true; b.vx = b.vy = b.vz = 0;
-        this.emit({ type: 'off', ball: b.id }, `o${b.id}`);
-      }
     }
-    for (let i = 0; i < this.balls.length; i++) for (let j = i + 1; j < this.balls.length; j++) {
-      const a = this.balls[i], b = this.balls[j];
-      if (a.pocketed || b.pocketed) continue;
-      if (a.vx === 0 && a.vy === 0 && a.vz === 0 && b.vx === 0 && b.vy === 0 && b.vz === 0) continue;
-      let dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-      if (Math.abs(dx) > 2 * R || Math.abs(dy) > 2 * R || Math.abs(dz) > 2 * R) continue;
-      let distance = Math.hypot(dx, dy, dz);
-      if (distance >= 2 * R || distance < 1e-9) continue;
-      const oldRVX = b.vx - a.vx, oldRVY = b.vy - a.vy, oldRVZ = b.vz - a.vz;
-      const speed2 = oldRVX * oldRVX + oldRVY * oldRVY + oldRVZ * oldRVZ;
-      const dot = dx * oldRVX + dy * oldRVY + dz * oldRVZ;
-      let rewind = 0;
-      // Swept contact fixes the angle before balls penetrate at high speeds.
-      if (speed2 > 1e-9 && dot < 0) {
-        const root = (dot + Math.sqrt(Math.max(0, dot * dot - speed2 * (distance * distance - 4 * R * R)))) / speed2;
-        if (root > 0 && root <= dt * 1.01) {
-          rewind = root;
-          a.x -= a.vx * rewind; a.y -= a.vy * rewind; a.z = Math.max(R, a.z - a.vz * rewind);
-          b.x -= b.vx * rewind; b.y -= b.vy * rewind; b.z = Math.max(R, b.z - b.vz * rewind);
-          dx = b.x - a.x; dy = b.y - a.y; dz = b.z - a.z; distance = Math.hypot(dx, dy, dz);
-        }
-      }
-      const nx = dx / distance, ny = dy / distance, nz = dz / distance, overlap = Math.max(0, 2 * R - distance) + 1e-6;
-      a.x -= nx * overlap / 2; a.y -= ny * overlap / 2; a.z = Math.max(R, a.z - nz * overlap / 2);
-      b.x += nx * overlap / 2; b.y += ny * overlap / 2; b.z = Math.max(R, b.z + nz * overlap / 2);
-      const rvx = b.vx - a.vx, rvy = b.vy - a.vy, rvz = b.vz - a.vz;
-      const vn = rvx * nx + rvy * ny + rvz * nz;
-      if (vn >= 0) continue;
-      const impulse = -(1 + 0.94) * vn / 2;
-      a.vx -= impulse * nx; a.vy -= impulse * ny; a.vz -= impulse * nz;
-      b.vx += impulse * nx; b.vy += impulse * ny; b.vz += impulse * nz;
-      const sumX = a.wx + b.wx, sumY = a.wy + b.wy, sumZ = a.wz + b.wz;
-      const cx = rvx - R * (sumY * nz - sumZ * ny), cy = rvy - R * (sumZ * nx - sumX * nz), cz = rvz - R * (sumX * ny - sumY * nx);
-      const cvn = cx * nx + cy * ny + cz * nz;
-      let jx = -(cx - cvn * nx) / 7, jy = -(cy - cvn * ny) / 7, jz = -(cz - cvn * nz) / 7;
-      const jt = Math.hypot(jx, jy, jz), limit = 0.045 * impulse;
-      if (jt > limit) { jx *= limit / jt; jy *= limit / jt; jz *= limit / jt; }
-      a.vx -= jx; a.vy -= jy; a.vz -= jz; b.vx += jx; b.vy += jy; b.vz += jz;
-      const ox = -2.5 / R * (ny * jz - nz * jy), oy = -2.5 / R * (nz * jx - nx * jz), oz = -2.5 / R * (nx * jy - ny * jx);
-      a.wx += ox; b.wx += ox; a.wy += oy; b.wy += oy; a.wz += oz; b.wz += oz;
-      if (rewind) {
-        a.x += a.vx * rewind; a.y += a.vy * rewind; a.z = Math.max(R, a.z + a.vz * rewind);
-        b.x += b.vx * rewind; b.y += b.vy * rewind; b.z = Math.max(R, b.z + b.vz * rewind);
-      }
-      this.emit({ type: 'contact', ball: a.id, other: b.id, speed: -vn }, `c${a.id}-${b.id}`);
-    }
+    this.advance(dt);
     for (const b of this.balls) {
       if (b.pocketed) continue;
-      // Include spin from cloth, cushions and contacts before settling the ball.
-      integrateOrientation(b, dt);
       if (b.z <= R + 1e-5 && b.vz < 0) b.vz = 0;
       const slip = Math.hypot(b.vx - R * b.wy, b.vy + R * b.wx);
       if (Math.hypot(b.vx, b.vy) < 0.012 && slip < 0.025 && b.z <= R + 0.0002 && Math.abs(b.vz) < 0.03)
@@ -201,25 +175,107 @@ export class PhysicsWorld {
     }
     if (this.recordTrails && (this.time >= this.nextTrace || this.done)) { this.trace(); this.nextTrace = this.time + 1 / 30; }
   }
-  private cushions(b: Ball) {
-    const R = TABLE.r;
-    if (b.x > R && b.x < W - R && b.y > R && b.y < H - R) return;
-    for (const seg of CUSHIONS) {
-      const sx = seg.bx - seg.ax, sy = seg.by - seg.ay;
-      const t = clamp(((b.x - seg.ax) * sx + (b.y - seg.ay) * sy) / (sx * sx + sy * sy), 0, 1);
-      const qx = seg.ax + t * sx, qy = seg.ay + t * sy;
-      const dx = b.x - qx, dy = b.y - qy, distance = Math.hypot(dx, dy);
-      if (distance >= R || distance < 1e-8) continue;
-      const nx = dx / distance, ny = dy / distance;
-      b.x += nx * (R - distance + 1e-6); b.y += ny * (R - distance + 1e-6);
-      const vn = b.vx * nx + b.vy * ny; if (vn >= 0) continue;
-      const normalImpulse = -(1 + 0.79) * vn;
-      b.vx += normalImpulse * nx; b.vy += normalImpulse * ny;
-      const tx = -ny, ty = nx, vt = b.vx * tx + b.vy * ty - R * b.wz;
-      const jt = clamp(-vt / 3.5, -normalImpulse * 0.16, normalImpulse * 0.16);
-      b.vx += jt * tx; b.vy += jt * ty; b.wz -= 2.5 * jt / R;
-      this.emit({ type: 'rail', ball: b.id, rail: seg.name, speed: -vn }, `r${b.id}-${seg.name}`);
+  // Find the next impact before moving: a graze can begin and end inside one
+  // 240 Hz frame, and a frozen ball can hit the cushion immediately after contact.
+  private advance(dt: number) {
+    let remaining = dt, elapsed = 0;
+    for (let impacts = 0; remaining > 1e-10 && impacts < 256; impacts++) {
+      let hit: Impact | null = null;
+      const consider = (candidate: Impact) => {
+        if (candidate.time >= -1e-10 && candidate.time <= remaining && (!hit || candidate.time < hit.time)) hit = candidate;
+      };
+      for (let i = 0; i < this.balls.length; i++) {
+        const a = this.balls[i]; if (a.pocketed) continue;
+        for (let j = i + 1; j < this.balls.length; j++) {
+          const b = this.balls[j]; if (b.pocketed) continue;
+          const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+          const vx = b.vx - a.vx, vy = b.vy - a.vy, vz = b.vz - a.vz;
+          if (Math.abs(dx) > 2 * TABLE.r + Math.abs(vx) * remaining || Math.abs(dy) > 2 * TABLE.r + Math.abs(vy) * remaining || Math.abs(dz) > 2 * TABLE.r + Math.abs(vz) * remaining) continue;
+          const time = sphereTime(dx, dy, dz, vx, vy, vz, 2 * TABLE.r);
+          if (time !== null) consider({ type: 'contact', time, a, b });
+        }
+        for (let pocket = 0; pocket < POCKETS.length; pocket++) {
+          const p = POCKETS[pocket], dx = a.x - p.x, dy = a.y - p.y, radius = TABLE.pocketR - 0.006;
+          const time = dx * dx + dy * dy <= radius * radius ? 0 : sphereTime(dx, dy, 0, a.vx, a.vy, 0, radius);
+          if (time !== null && a.z + a.vz * time < TABLE.r + 0.012) consider({ type: 'pocket', time, a, pocket });
+        }
+        for (const seg of CUSHIONS) {
+          const cushion = cushionTime(a, seg, remaining);
+          if (cushion && a.z + a.vz * cushion.time < TABLE.r + 0.04) consider({ type: 'rail', a, seg, ...cushion });
+        }
+        if (a.vz < -1e-10) consider({ type: 'ground', a, time: Math.max(0, (TABLE.r - a.z) / a.vz) });
+        const exits = [
+          a.x < -0.13 || a.x > W + 0.13 || a.y < -0.13 || a.y > H + 0.13 ? 0 : Infinity,
+          a.vx < 0 ? (-0.13 - a.x) / a.vx : a.vx > 0 ? (W + 0.13 - a.x) / a.vx : Infinity,
+          a.vy < 0 ? (-0.13 - a.y) / a.vy : a.vy > 0 ? (H + 0.13 - a.y) / a.vy : Infinity,
+        ];
+        consider({ type: 'off', a, time: Math.min(...exits) });
+      }
+      // The callback populates hit; use an explicit type for control-flow analysis.
+      const impact = hit as Impact | null;
+      const travel = impact ? Math.max(0, impact.time) : remaining;
+      for (const b of this.balls) if (!b.pocketed) {
+        b.x += b.vx * travel; b.y += b.vy * travel; b.z = Math.max(TABLE.r, b.z + b.vz * travel);
+        integrateOrientation(b, travel);
+      }
+      elapsed += travel; remaining -= travel;
+      if (!impact) return;
+      const time = this.time + elapsed, a = impact.a;
+      switch (impact.type) {
+        case 'contact': this.contact(a, impact.b, time); break;
+        case 'rail': {
+          const { nx, ny } = impact, vn = a.vx * nx + a.vy * ny;
+          const normalImpulse = -(1 + 0.79) * vn;
+          a.x += nx * 1e-8; a.y += ny * 1e-8;
+          a.vx += normalImpulse * nx; a.vy += normalImpulse * ny;
+          const tx = -ny, ty = nx, vt = a.vx * tx + a.vy * ty - TABLE.r * a.wz;
+          const jt = clamp(-vt / 3.5, -normalImpulse * 0.16, normalImpulse * 0.16);
+          a.vx += jt * tx; a.vy += jt * ty; a.wz -= 2.5 * jt / TABLE.r;
+          this.emit({ type: 'rail', ball: a.id, rail: impact.seg.name, speed: -vn }, time);
+          break;
+        }
+        case 'pocket': {
+          const entry = { ...a }, speed = Math.hypot(a.vx, a.vy, a.vz);
+          a.pocketed = true; a.vx = a.vy = a.vz = 0;
+          this.emit({ type: 'pocket', ball: a.id, pocket: impact.pocket, speed, entry }, time);
+          break;
+        }
+        case 'off':
+          a.pocketed = true; a.vx = a.vy = a.vz = 0;
+          this.emit({ type: 'off', ball: a.id }, time);
+          break;
+        case 'ground':
+          a.z = TABLE.r; a.vz = Math.abs(a.vz) > 0.32 ? -a.vz * 0.2 : 0;
+          a.vx *= 0.99; a.vy *= 0.99;
+          break;
+      }
     }
+    // In a dense simultaneous cluster, leave the unsolved fraction unmoved
+    // rather than allowing balls to tunnel through each other or a cushion.
+  }
+  private contact(a: Ball, b: Ball, time: number) {
+    const R = TABLE.r;
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, distance = Math.hypot(dx, dy, dz);
+    const nx = dx / distance, ny = dy / distance, nz = dz / distance;
+    const rvx = b.vx - a.vx, rvy = b.vy - a.vy, rvz = b.vz - a.vz;
+    const vn = rvx * nx + rvy * ny + rvz * nz;
+    if (vn >= 0) return;
+    const separation = Math.max(0, 2 * R - distance) / 2 + 1e-8;
+    a.x -= nx * separation; a.y -= ny * separation; a.z = Math.max(R, a.z - nz * separation);
+    b.x += nx * separation; b.y += ny * separation; b.z = Math.max(R, b.z + nz * separation);
+    const impulse = -(1 + 0.94) * vn / 2;
+    a.vx -= impulse * nx; a.vy -= impulse * ny; a.vz -= impulse * nz;
+    b.vx += impulse * nx; b.vy += impulse * ny; b.vz += impulse * nz;
+    const sumX = a.wx + b.wx, sumY = a.wy + b.wy, sumZ = a.wz + b.wz;
+    const cx = rvx - R * (sumY * nz - sumZ * ny), cy = rvy - R * (sumZ * nx - sumX * nz), cz = rvz - R * (sumX * ny - sumY * nx);
+    const cvn = cx * nx + cy * ny + cz * nz;
+    let jx = -(cx - cvn * nx) / 7, jy = -(cy - cvn * ny) / 7, jz = -(cz - cvn * nz) / 7;
+    const jt = Math.hypot(jx, jy, jz), limit = 0.045 * impulse;
+    if (jt > limit) { jx *= limit / jt; jy *= limit / jt; jz *= limit / jt; }
+    a.vx -= jx; a.vy -= jy; a.vz -= jz; b.vx += jx; b.vy += jy; b.vz += jz;
+    const ox = -2.5 / R * (ny * jz - nz * jy), oy = -2.5 / R * (nz * jx - nx * jz), oz = -2.5 / R * (nx * jy - ny * jx);
+    a.wx += ox; b.wx += ox; a.wy += oy; b.wy += oy; a.wz += oz; b.wz += oz;
+    this.emit({ type: 'contact', ball: a.id, other: b.id, speed: -vn }, time);
   }
   result(): Simulation { return { balls: copyState(this.balls), events: [...this.events], time: this.time, trails: this.trails, settled: !this.timedOut && this.done }; }
 }

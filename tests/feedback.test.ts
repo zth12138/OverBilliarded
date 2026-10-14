@@ -24,7 +24,7 @@ test('cue pulls back before contact and triggers exactly one shot even across a 
   assert.equal(feedback.advance(1), false);
 });
 
-test('pocket animation keeps an independent spinning entry pose and converges into the hole', () => {
+test('pocket animation keeps an independent entry pose and rolls behind the pocket lip', () => {
   const input = [ball(0, 1.27, 0.7)];
   const sim = simulate(input, { ...shot, angle: -Math.PI / 2, power: 12 });
   const event = sim.events.find(e => e.type === 'pocket')!;
@@ -37,8 +37,8 @@ test('pocket animation keeps an independent spinning entry pose and converges in
   assert.equal(start.radius, TABLE.r); assert.equal(start.opacity, 1);
   feedback.advance(fall.duration * 0.8);
   const nearEnd = pocketPose(fall), pocket = POCKETS[fall.pocket];
-  assert.ok(Math.hypot(nearEnd.x - pocket.x, nearEnd.y - pocket.y) < 0.02);
-  assert.ok(nearEnd.radius < start.radius && nearEnd.opacity < 1);
+  assert.ok(nearEnd.x > pocket.x + 0.04, 'middle pocket travels sideways into the concealed chute');
+  assert.ok(nearEnd.radius > start.radius * 0.8 && nearEnd.opacity < 1, 'occlusion replaces shrinking to a point');
   assert.notEqual(fall.ball.qw, snapshot.entry!.qw);
   assert.deepEqual(event, snapshot);
   feedback.advance(1); assert.equal(feedback.falls.length, 0);
@@ -54,6 +54,42 @@ test('feedback does not change live physics compared with batch simulation', () 
     while (cursor < live.events.length) feedback.consume(live.events[cursor++]);
   }
   assert.deepEqual(live.result(), expected);
+});
+
+test('all six pockets hide the ball through sideways travel while the surface rolls', () => {
+  for (let pocket = 0; pocket < POCKETS.length; pocket++) {
+    const p = POCKETS[pocket], feedback = new ShotFeedback();
+    const entry = ball(1, p.x, p.y + (p.y < TABLE.h / 2 ? 0.035 : -0.035));
+    const snapshot = structuredClone(entry);
+    feedback.consume({ type: 'pocket', time: 0, ball: 1, pocket, entry });
+    const fall = feedback.falls[0], initial = pocketPose(fall);
+    assert.equal(initial.x, entry.x); assert.equal(initial.y, entry.y);
+    feedback.advance(fall.duration * 0.75);
+    const pose = pocketPose(fall);
+    if (p.x === TABLE.w) {
+      assert.equal(pose.x, p.x, 'right pockets roll vertically');
+      const sign = p.y < TABLE.h / 2 ? 1 : -1;
+      assert.ok((pose.y - p.y) * sign > TABLE.r, 'top right rolls down; bottom right rolls up');
+    } else {
+      assert.equal(pose.y, p.y, 'left and middle pockets roll horizontally');
+      assert.ok(pose.x > p.x + TABLE.r, 'left and middle pockets roll right');
+    }
+    assert.ok(pose.radius > TABLE.r * 0.8, 'the ball stays recognizable until occluded');
+    assert.notEqual(fall.ball.qw, 1, 'the surface rolls even with a non-spinning entry');
+    assert.deepEqual(entry, snapshot);
+    feedback.advance(fall.duration);
+    assert.equal(feedback.falls.length, 0);
+  }
+});
+
+test('pocket shrink settles early and does not continue over the roll', () => {
+  const feedback = new ShotFeedback(), entry = ball(1, 1.27, 0.7);
+  feedback.consume({ type: 'pocket', time: 0, ball: 1, pocket: 1, entry });
+  const fall = feedback.falls[0];
+  feedback.advance(fall.duration * 0.35); const settled = pocketPose(fall).radius;
+  feedback.advance(fall.duration * 0.35); const rolling = pocketPose(fall).radius;
+  assert.ok(settled < TABLE.r && settled > TABLE.r * 0.8, 'the initial dip only shrinks a little');
+  assert.equal(rolling, settled, 'size stays fixed during the roll');
 });
 
 test('impact metadata measures incoming speed and snapshots do not follow settled balls', () => {

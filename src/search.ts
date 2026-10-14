@@ -1,8 +1,9 @@
-import { clamp, POCKETS, segmentClear, simulate, TABLE } from './physics';
+import { clamp, PhysicsWorld, POCKETS, segmentClear, simulate, TABLE } from './physics';
 import { adjudicate, describeEventChain, groupOf, legalFirstIds, remainingFor } from './rules';
 import type { Ball, Plan, RuleState, SearchRequest, SearchUpdate, Shot, SortMode } from './types';
 
-interface Route { angle: number; label: string; complexity: number; length: number; cut: number }
+export interface Route { angle: number; label: string; length: number; cut: number; contact: Point; kind: Shot['kind'] }
+export interface SearchGrid { route: Route; shots: Shot[] }
 interface Point { x: number; y: number }
 const R = TABLE.r;
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -34,24 +35,28 @@ function bounce(from: Point, to: Point, rail: typeof rails[number]): Point | nul
 export function generateRoutes(req: SearchRequest): Route[] {
   const balls = req.balls, cue = balls.find(b => b.id === 0)!, target = balls.find(b => b.id === req.target)!;
   const pocket = POCKETS[req.pocket], legal = legalFirstIds(balls, req.rules), routes: Route[] = [];
-  const add = (from: Point, contact: Point, label: string, complexity: number, length: number, cut: number) => {
-    if (cut > 0.12) routes.push({ angle: Math.atan2(contact.y - from.y, contact.x - from.x), label, complexity, length, cut });
+  const add = (from: Point, contact: Point, label: string, length: number, cut: number, kind: Shot['kind'] = 'normal') => {
+    if (cut > 0.12 || kind === 'masse') routes.push({ angle: Math.atan2(contact.y - from.y, contact.x - from.x), label, length, cut, contact, kind });
   };
   const directContact = ghost(target, pocket);
   const targetClear = segmentClear(balls, target.x, target.y, pocket.x, pocket.y, [0, target.id], 2 * R);
   if (legal.includes(target.id)) {
     if (targetClear && segmentClear(balls, cue.x, cue.y, directContact.x, directContact.y, [0, target.id]))
-      add(cue, directContact, '直接进球', 4, dist(cue, target) + dist(target, pocket), cutCos(cue, directContact, target, pocket));
+      add(cue, directContact, '直接进球', dist(cue, target) + dist(target, pocket), cutCos(cue, directContact, target, pocket));
+    // A blocked planar cue path must still seed jump and curved shots. Actual
+    // first contact, airborne clearance and pocketing are decided by physics.
+    if (targetClear) for (const kind of ['jump', 'masse'] as const)
+      add(cue, directContact, '直接进球', dist(cue, target) + dist(target, pocket), cutCos(cue, directContact, target, pocket), kind);
     for (const rail of rails) {
       const p = bounce(target, pocket, rail);
       if (p && segmentClear(balls, target.x, target.y, p.x, p.y, [0, target.id]) && segmentClear(balls, p.x, p.y, pocket.x, pocket.y, [0, target.id])) {
         const contact = ghost(target, p);
         if (segmentClear(balls, cue.x, cue.y, contact.x, contact.y, [0, target.id]))
-          add(cue, contact, `单库翻袋 · ${rail.name}`, 32, dist(cue, target) + dist(target, p) + dist(p, pocket), cutCos(cue, contact, target, p));
+          add(cue, contact, `单库翻袋 · ${rail.name}`, dist(cue, target) + dist(target, p) + dist(p, pocket), cutCos(cue, contact, target, p));
       }
       const kick = bounce(cue, directContact, rail);
       if (kick && targetClear && segmentClear(balls, cue.x, cue.y, kick.x, kick.y, [0, target.id]) && segmentClear(balls, kick.x, kick.y, directContact.x, directContact.y, [0, target.id]))
-        add(cue, kick, `单库解球 · ${rail.name}`, 38, dist(cue, kick) + dist(kick, target) + dist(target, pocket), cutCos(kick, directContact, target, pocket));
+        add(cue, kick, `单库解球 · ${rail.name}`, dist(cue, kick) + dist(kick, target) + dist(target, pocket), cutCos(kick, directContact, target, pocket));
     }
   }
   // Legal first object strikes the selected target toward the called pocket.
@@ -60,7 +65,7 @@ export function generateRoutes(req: SearchRequest): Route[] {
     const contact = ghost(first, directContact), c1 = cutCos(cue, contact, first, directContact), c2 = cutCos(first, directContact, target, pocket);
     if (c2 > 0.2 && segmentClear(balls, cue.x, cue.y, contact.x, contact.y, [0, first.id])
       && segmentClear(balls, first.x, first.y, directContact.x, directContact.y, [0, first.id, target.id]))
-      add(cue, contact, `组合球 · ${first.id} → ${target.id}`, 43, dist(cue, first) + dist(first, target) + dist(target, pocket), c1 * c2);
+      add(cue, contact, `组合球 · ${first.id} → ${target.id}`, dist(cue, first) + dist(first, target) + dist(target, pocket), c1 * c2);
   }
   return routes;
 }
@@ -91,21 +96,86 @@ function success(req: SearchRequest, outcome: ReturnType<typeof simulate>): bool
 }
 function diverse(a: Plan, b: Plan) {
   const cueA = a.outcome.balls.find(b => b.id === 0)!, cueB = b.outcome.balls.find(b => b.id === 0)!;
-  return a.route !== b.route || dist(cueA, cueB) > 0.17 || Math.abs(a.shot.tipY - b.shot.tipY) > 0.45 || Math.abs(a.shot.tipX - b.shot.tipX) > 0.45;
+  return a.shot.kind !== b.shot.kind || Math.abs(a.shot.elevation - b.shot.elevation) > 12
+    || a.route !== b.route || dist(cueA, cueB) > 0.17 || Math.abs(a.shot.tipY - b.shot.tipY) > 0.45 || Math.abs(a.shot.tipX - b.shot.tipX) > 0.45;
 }
-export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => void): Plan[] {
+// Keep displayed parameters identical to the values the physics engine uses.
+function normalizeShot(shot: Shot): Shot {
+  const bounds = shot.kind === 'normal' ? [0, 34] : shot.kind === 'jump' ? [20, 78] : [36, 82];
+  const len = Math.hypot(shot.tipX, shot.tipY), scale = len > 0.85 ? 0.85 / len : 1;
+  return { ...shot, power: clamp(shot.power, 1, 100), elevation: clamp(shot.elevation, bounds[0], bounds[1]),
+    tipX: shot.tipX * scale, tipY: shot.tipY * scale };
+}
+export function shotKey(shot: Shot): string {
+  return [shot.kind, shot.angle, shot.power, shot.tipX, shot.tipY, shot.elevation].map(v => typeof v === 'number' ? v.toFixed(6) : v).join(':');
+}
+export function coarseShots(route: Route): Shot[] {
+  const shots: Shot[] = [];
+  const add = (offset: number, power: number, tipX: number, tipY: number, elevation: number) =>
+    shots.push(normalizeShot({ angle: route.angle + offset, power, tipX, tipY, elevation, kind: route.kind }));
+  if (route.kind === 'normal') {
+    const spins = [[0, 0], [0, -0.65], [0, 0.65], [-0.45, 0], [0.45, 0], [-0.4, -0.45], [0.4, -0.45], [-0.4, 0.45], [0.4, 0.45]];
+    for (const offset of [0, -0.003, 0.003, -0.007, 0.007, -0.013, 0.013])
+      for (const power of [12, 18, 24, 31, 40, 51, 64]) for (const [x, y] of spins) add(offset, power, x, y, 0);
+    for (const e of [12, 24, 34]) for (const offset of [0, -0.007, 0.007])
+      for (const power of [18, 31, 51]) for (const [x, y] of spins) add(offset, power, x, y, e);
+  } else if (route.kind === 'jump') {
+    for (const e of [28, 38, 48, 58, 68]) for (const power of [24, 32, 40, 48, 58, 70, 84, 100])
+      for (const offset of [0, -0.004, 0.004, -0.012, 0.012]) for (const y of [0, -0.35, 0.35]) add(offset, power, 0, y, e);
+  } else {
+    // Sliding friction rotates an elevated, off-centre shot's planar velocity.
+    // Seed both bending directions; simulations and refinement decide the aim.
+    for (const e of [48, 60, 72, 82]) for (const x of [-0.7, -0.45, 0.45, 0.7]) for (const y of [-0.4, 0.2]) {
+      const radians = e * Math.PI / 180;
+      const bend = Math.atan2(x * (Math.sin(radians) - 0.022 * Math.cos(radians)), Math.cos(radians) * (1 + y));
+      for (const factor of [0.35, 0.65, 1, 1.25]) for (const power of [18, 32, 48, 64, 82]) add(-bend * factor, power, x, y, e);
+    }
+  }
+  return shots;
+}
+export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => void, preparedGrids?: SearchGrid[]): Plan[] {
   const start = performance.now(); let checked = 0;
   const cue = req.balls.find(b => b.id === 0 && !b.pocketed), target = req.balls.find(b => b.id === req.target && !b.pocketed);
   if (!cue || !target || !POCKETS[req.pocket] || req.rules.breakShot) { onUpdate?.({ type: 'done', id: req.id, plans: [], checked, elapsed: 0 }); return []; }
-  const routes = generateRoutes(req), candidates: Plan[] = [];
-  const offsets = [0, -0.003, 0.003, -0.007, 0.007, -0.013, 0.013];
-  const powers = [12, 18, 24, 31, 40, 51, 64];
-  const spins: [number, number][] = [[0, 0], [0, -0.65], [0, 0.65], [-0.45, 0], [0.45, 0]];
-  const total = routes.length * offsets.length * powers.length * spins.length + 240;
-  const tryShot = (route: Route, shot: Shot) => {
-    const outcome = simulate(req.balls, shot); checked++;
+  const candidates: Plan[] = [];
+  const grids = preparedGrids ?? generateRoutes(req).map(route => ({ route, shots: coarseShots(route) }));
+  const total = grids.reduce((sum, grid) => sum + grid.shots.length, 0) + 1080 + 288;
+  interface Seed { route: Route; shot: Shot; loss: number }
+  const seeds: Record<Shot['kind'], Seed[]> = { normal: [], jump: [], masse: [] };
+  const legal = legalFirstIds(req.balls, req.rules), seen = new Map<string, number>();
+  const tryShot = (route: Route, input: Shot): Seed => {
+    const shot = normalizeShot(input);
+    const key = `${shotKey(shot)}:${route.contact.x}:${route.contact.y}`;
+    const cached = seen.get(key);
+    if (cached !== undefined) return { route, shot, loss: cached };
+    const world = new PhysicsWorld(req.balls, shot, false);
+    const movingCue = world.balls.find(b => b.id === 0)!, movingTarget = world.balls.find(b => b.id === req.target)!;
+    let nearContact = dist(cue, route.contact), nearPocket = dist(target, POCKETS[req.pocket]), eventCount = 0, invalid = false, firstChecked = false;
+    while (!world.done) {
+      world.step();
+      nearContact = Math.min(nearContact, Math.hypot(movingCue.x - route.contact.x, movingCue.y - route.contact.y, movingCue.z - R));
+      if (!movingTarget.pocketed) nearPocket = Math.min(nearPocket, dist(movingTarget, POCKETS[req.pocket]));
+      for (; eventCount < world.events.length; eventCount++) {
+        const e = world.events[eventCount];
+        if (e.type === 'contact' && (e.ball === 0 || e.other === 0) && !firstChecked) {
+          firstChecked = true;
+          if (!legal.includes(e.ball === 0 ? e.other! : e.ball)) invalid = true;
+        }
+        if ((e.type === 'off' || e.type === 'pocket') && (e.ball === 0 || e.ball === req.target && (e.type === 'off' || e.pocket !== req.pocket))) invalid = true;
+      }
+      if (invalid) break;
+      // If the cue has already settled before its first object-ball contact,
+      // no later event can make this shot succeed. This is a common outcome
+      // for coarse angle/power samples and avoids simulating the quiet tail.
+      if (!firstChecked && movingCue.z <= R + 0.0002 && Math.abs(movingCue.vz) < 0.03
+        && Math.hypot(movingCue.vx, movingCue.vy) < 0.012
+        && Math.hypot(movingCue.wx, movingCue.wy, movingCue.wz) < 0.08) { world.done = true; break; }
+    }
+    const outcome = world.result(); checked++;
     if (checked % 30 === 0) onUpdate?.({ type: 'progress', id: req.id, checked, total, found: candidates.length });
-    if (!success(req, outcome)) return;
+    let loss = invalid || !outcome.settled ? 10 + nearContact : outcome.events.some(e => e.type === 'contact' && (e.ball === req.target || e.other === req.target))
+      ? 0.1 + nearPocket : 2 + nearContact;
+    if (!success(req, outcome)) { seen.set(key, loss); return { route, shot, loss }; }
     const contacts = outcome.events.filter(e => e.type === 'contact').length;
     const railsBeforePot = outcome.events.filter(e => e.type === 'rail' && e.time < outcome.events.find(e => e.type === 'pocket' && e.ball === req.target)!.time).length;
     const first = outcome.events.find(e => e.type === 'contact' && (e.ball === 0 || e.other === 0))!;
@@ -115,7 +185,8 @@ export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => 
     const cueRails = outcome.events.filter(e => e.type === 'rail' && e.ball === 0 && e.time < first.time);
     const label = firstId !== req.target ? `组合球 · ${firstId} → ${req.target}` : cueRails.length ? `${cueRails.length}库解球 · ${cueRails[0].rail}${targetRails.length ? ' + 翻袋' : ''}` : targetRails.length ? `${targetRails.length}库翻袋 · ${targetRails[0].rail}` : '直接进球';
     const baseComplexity = firstId !== req.target ? 43 : targetRails.length ? 32 : cueRails.length ? 38 : 4;
-    const complexity = clamp(baseComplexity + Math.max(0, railsBeforePot - (targetRails.length || cueRails.length ? 1 : 0)) * 7
+    const complexity = clamp(baseComplexity + (shot.kind === 'jump' ? 24 : shot.kind === 'masse' ? 34 : 0) + shot.elevation * 0.18
+      + Math.max(0, railsBeforePot - (targetRails.length || cueRails.length ? 1 : 0)) * 7
       + Math.max(0, contacts - (firstId !== req.target ? 2 : 1)) * 9 + Math.abs(shot.tipX) * 12 + Math.abs(shot.tipY) * 6 + Math.max(0, shot.power - 45) * 0.25, 0, 100);
     const ruling = adjudicate(req.balls, outcome.balls, outcome.events, { ...req.rules, calledPocket: req.pocket });
     const evaluatedRules: RuleState = { ...req.rules, groups: [...req.rules.groups] };
@@ -123,25 +194,65 @@ export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => 
     const position = ruling.winner === req.rules.player ? 100 : req.rules.mode === 'match' && !ruling.continuation
       ? 100 - positionScore(outcome.balls, { ...evaluatedRules, player: req.rules.player === 0 ? 1 : 0 }, req.target)
       : positionScore(outcome.balls, evaluatedRules, req.target);
-    const plan: Plan = { id: `${req.id}-${checked}`, shot, route: label, chain: describeEventChain(outcome.events), complexity, position, robustness: 0, score: 0, outcome };
+    const plan: Plan = { id: `${req.id}-${checked}`, shot, route: (shot.kind === 'jump' ? '跳球 · ' : shot.kind === 'masse' ? '扎杆 · ' : '') + label, chain: describeEventChain(outcome.events), complexity, position, robustness: 0, score: 0, outcome };
     plan.score = planScore(plan, req.sort); candidates.push(plan);
+    loss = -1 - plan.score / 100;
+    seen.set(key, loss);
+    return { route, shot, loss };
   };
-  for (const route of routes) for (const offset of offsets) for (const power of powers) for (const [tipX, tipY] of spins)
-    tryShot(route, { angle: route.angle + offset, power, tipX, tipY, elevation: 0, kind: 'normal' });
+  const distinctSeed = (a: Seed, b: Seed) => Math.abs(a.shot.angle - b.shot.angle) > 0.04 || Math.abs(a.shot.power - b.shot.power) > 12
+    || Math.abs(a.shot.elevation - b.shot.elevation) > 9 || Math.hypot(a.shot.tipX - b.shot.tipX, a.shot.tipY - b.shot.tipY) > 0.3;
+  for (const { route, shots } of grids) for (const shot of shots) {
+    const seed = tryShot(route, shot), pool = seeds[shot.kind];
+    pool.push(seed); pool.sort((a, b) => a.loss - b.loss);
+    const kept: Seed[] = [];
+    for (const s of pool) { if (kept.every(p => distinctSeed(s, p))) kept.push(s); if (kept.length === 6) break; }
+    seeds[shot.kind] = kept;
+  }
+  // Refine unsuccessful near misses as well as legal shots. Elevation is a
+  // search coordinate, never copied from the player's manual controls.
+  for (const pool of Object.values(seeds)) for (let seed of pool) {
+    for (let level = 0; level < 3; level++) for (let pass = 0; pass < 2; pass++) {
+      const steps = { angle: (seed.shot.kind === 'normal' ? [0.012, 0.004, 0.0013] : [0.04, 0.012, 0.003])[level],
+        power: [7, 3, 1][level], tipX: [0.16, 0.07, 0.025][level], tipY: [0.16, 0.07, 0.025][level], elevation: [6, 2.5, 0.8][level] };
+      const previous = seed;
+      for (const parameter of Object.keys(steps) as (keyof typeof steps)[]) {
+        const centre = seed;
+        for (const direction of [-1, 1]) {
+          const next = tryShot(seed.route, { ...centre.shot, [parameter]: centre.shot[parameter] + direction * steps[parameter] });
+          if (next.loss < seed.loss) seed = next;
+        }
+      }
+      if (seed === previous) break;
+    }
+  }
   // Keep distinct trajectories/leave positions before doing expensive perturbation validation.
   const finalists: Plan[] = [];
+  // Preserve a representative of each successful stroke before filling the
+  // remaining slots by score, so special strokes survive normal-shot crowds.
+  for (const kind of ['normal', 'jump', 'masse'] as const) {
+    const best = candidates.filter(p => p.shot.kind === kind).sort((a, b) => b.score - a.score)[0];
+    if (best) finalists.push(best);
+  }
   for (const candidate of candidates.sort((a, b) => b.score - a.score)) {
     if (finalists.every(p => diverse(p, candidate))) finalists.push(candidate);
-    if (finalists.length >= 24) break;
+    if (finalists.length >= 12) break;
   }
   for (const plan of finalists) {
     let hits = 0;
     const variations = [
       { angle: -0.0015 }, { angle: 0.0015 }, { angle: -0.003 }, { angle: 0.003 },
       { power: -1.5 }, { power: 1.5 }, { tipX: -0.035 }, { tipX: 0.035 }, { tipY: -0.035 }, { tipY: 0.035 },
+      { elevation: -1.5 }, { elevation: 1.5 },
     ];
+    const tested = new Set([shotKey(plan.shot)]);
     for (const v of variations) {
-      const perturbed = { ...plan.shot, angle: plan.shot.angle + (v.angle ?? 0), power: plan.shot.power + (v.power ?? 0), tipX: plan.shot.tipX + (v.tipX ?? 0), tipY: plan.shot.tipY + (v.tipY ?? 0) };
+      const [parameter, delta] = Object.entries(v)[0] as [Exclude<keyof Shot, 'kind'>, number];
+      let perturbed = normalizeShot({ ...plan.shot, [parameter]: plan.shot[parameter] + delta });
+      // At a parameter limit, use a distinct inward perturbation instead of
+      // counting the unchanged successful shot as extra tolerance evidence.
+      if (tested.has(shotKey(perturbed))) perturbed = normalizeShot({ ...plan.shot, [parameter]: plan.shot[parameter] - 2 * delta });
+      tested.add(shotKey(perturbed));
       if (success(req, simulate(req.balls, perturbed))) hits++; checked++;
     }
     plan.robustness = hits / variations.length * 100;
@@ -149,7 +260,9 @@ export function searchPlans(req: SearchRequest, onUpdate?: (u: SearchUpdate) => 
     plan.outcome = simulate(req.balls, plan.shot, true);
     onUpdate?.({ type: 'progress', id: req.id, checked, total, found: finalists.length });
   }
-  const plans = finalists.sort((a, b) => b.score - a.score).slice(0, 8);
+  const ranked = finalists.sort((a, b) => b.score - a.score);
+  const representatives = (['normal', 'jump', 'masse'] as const).map(kind => ranked.find(p => p.shot.kind === kind)).filter((p): p is Plan => !!p);
+  const plans = [...representatives, ...ranked.filter(p => !representatives.includes(p)).slice(0, 8 - representatives.length)].sort((a, b) => b.score - a.score);
   onUpdate?.({ type: 'done', id: req.id, plans, checked, elapsed: performance.now() - start });
   return plans;
 }

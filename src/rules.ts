@@ -17,16 +17,20 @@ export function legalFirstIds(balls: Ball[], state: RuleState): number[] {
 }
 export function adjudicate(before: Ball[], after: Ball[], events: PhysicsEvent[], state: RuleState): Adjudication {
   const reasons: string[] = [];
-  const firstEvent = events.find(e => e.type === 'contact' && (e.ball === 0 || e.other === 0));
+  const firstIndex = events.findIndex(e => e.type === 'contact' && (e.ball === 0 || e.other === 0));
+  const firstEvent = events[firstIndex];
+  // Equal timestamps can be genuine simultaneous impacts (e.g. a frozen ball).
+  // Preserve their causal order instead of crediting a rail before first contact.
+  const afterFirst = (e: PhysicsEvent, index: number) => !!firstEvent && (e.time > firstEvent.time || e.time === firstEvent.time && index > firstIndex);
   const first = firstEvent ? firstEvent.ball === 0 ? firstEvent.other : firstEvent.ball : null;
   if (first == null) reasons.push('空杆：白球未碰到目标球');
   else if (!legalFirstIds(before, state).includes(first)) reasons.push(first === 8 ? '尚不能首先击打黑八' : '首先碰到对方球');
   const pots = events.filter(e => e.type === 'pocket');
   if (pots.some(e => e.ball === 0)) reasons.push('白球落袋');
   if (events.some(e => e.type === 'off')) reasons.push('球跳出台面');
-  if (firstEvent && !state.breakShot && !events.some(e => (e.type === 'rail' || e.type === 'pocket') && e.time >= firstEvent.time)) reasons.push('碰球后没有进球或碰库');
+  if (firstEvent && !state.breakShot && !events.some((e, i) => (e.type === 'rail' || e.type === 'pocket') && afterFirst(e, i))) reasons.push('碰球后没有进球或碰库');
   if (state.breakShot) {
-    const rails = new Set(events.filter(e => e.type === 'rail' && e.ball !== 0 && (!firstEvent || e.time >= firstEvent.time)).map(e => e.ball));
+    const rails = new Set(events.filter((e, i) => e.type === 'rail' && e.ball !== 0 && afterFirst(e, i)).map(e => e.ball));
     if (!pots.some(e => e.ball !== 0) && rails.size < 4) reasons.push('开球不足：需进球或至少四颗目标球碰库');
   }
   const blackPot = pots.find(e => e.ball === 8); const blackOff = events.some(e => e.type === 'off' && e.ball === 8); const group = state.groups[state.player];
@@ -45,7 +49,7 @@ export function adjudicate(before: Ball[], after: Ball[], events: PhysicsEvent[]
   return { foul: reasons.length > 0, reasons, winner, continuation, assigned, respotEight: state.breakShot && (!!blackPot || blackOff) };
 }
 export function finishTurn(before: Ball[], after: Ball[], events: PhysicsEvent[], state: RuleState): RuleState {
-  const ruling = adjudicate(before, after, events, state); const next: RuleState = { ...state, groups: [...state.groups], shots: state.shots + 1, breakShot: false, ballInHand: ruling.foul, winner: ruling.winner, calledPocket: null };
+  const ruling = adjudicate(before, after, events, state); const next: RuleState = { ...state, groups: [...state.groups], shots: state.shots + 1, breakShot: false, ballInHand: ruling.foul && ruling.winner === null, winner: ruling.winner, calledPocket: null };
   if (ruling.respotEight) respot(after, 8);
   if (ruling.assigned) { next.groups[state.player] = ruling.assigned; next.groups[state.player === 0 ? 1 : 0] = ruling.assigned === 'solid' ? 'stripe' : 'solid'; }
   const turnChanges = ruling.foul || !ruling.continuation;
