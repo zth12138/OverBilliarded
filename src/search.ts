@@ -20,6 +20,7 @@ const rails = [
   { axis: 'x' as const, value: R, name: '左库' }, { axis: 'x' as const, value: TABLE.w - R, name: '右库' },
   { axis: 'y' as const, value: R, name: '上库' }, { axis: 'y' as const, value: TABLE.h - R, name: '下库' },
 ];
+type Rail = typeof rails[number];
 function reflected(p: Point, rail: typeof rails[number]): Point {
   return rail.axis === 'x' ? { x: rail.value - (p.x - rail.value) / 0.79, y: p.y } : { x: p.x, y: rail.value - (p.y - rail.value) / 0.79 };
 }
@@ -32,6 +33,51 @@ function bounce(from: Point, to: Point, rail: typeof rails[number]): Point | nul
   if (rail.axis === 'x') { if (p.y < 0.115 || p.y > TABLE.h - 0.115) return null; }
   else if (p.x < 0.115 || p.x > TABLE.w - 0.115 || Math.abs(p.x - TABLE.w / 2) < 0.105) return null;
   return p;
+}
+function twoCushionBounces(from: Point, to: Point, route: [Rail, Rail]): [Point, Point] | null {
+  const lengths = { x: TABLE.w - 2 * R, y: TABLE.h - 2 * R };
+  const start = { x: from.x - R, y: from.y - R }, end = { x: to.x - R, y: to.y - R };
+  const tiles = { x: 0, y: 0 }, directions: { x?: number; y?: number } = {};
+  for (const rail of route) {
+    const side = rail.value === R ? -1 : 1;
+    const direction = directions[rail.axis] ?? side;
+    if (directions[rail.axis] !== undefined) {
+      const increasingPhysical = (tiles[rail.axis] & 1) === 0;
+      const expectedSide = (direction > 0) === increasingPhysical ? 1 : -1;
+      if (side !== expectedSide) return null;
+    } else directions[rail.axis] = direction;
+    tiles[rail.axis] += direction;
+  }
+  const image = {
+    x: (tiles.x & 1) === 0 ? tiles.x * lengths.x + end.x : (tiles.x + 1) * lengths.x - end.x,
+    y: (tiles.y & 1) === 0 ? tiles.y * lengths.y + end.y : (tiles.y + 1) * lengths.y - end.y,
+  };
+  const delta = { x: image.x - start.x, y: image.y - start.y };
+  const currentTiles = { x: 0, y: 0 };
+  let previousT = 0;
+  const points: Point[] = [];
+  for (const rail of route) {
+    const direction = directions[rail.axis]!;
+    const plane = direction > 0 ? (currentTiles[rail.axis] + 1) * lengths[rail.axis] : currentTiles[rail.axis] * lengths[rail.axis];
+    const denominator = delta[rail.axis];
+    if (Math.abs(denominator) < 1e-8) return null;
+    const t = (plane - start[rail.axis]) / denominator;
+    if (t <= previousT + 1e-6 || t >= 1) return null;
+    const unfolded = { x: start.x + t * delta.x, y: start.y + t * delta.y };
+    const folded = {
+      x: (currentTiles.x & 1) === 0 ? unfolded.x - currentTiles.x * lengths.x : (currentTiles.x + 1) * lengths.x - unfolded.x,
+      y: (currentTiles.y & 1) === 0 ? unfolded.y - currentTiles.y * lengths.y : (currentTiles.y + 1) * lengths.y - unfolded.y,
+    };
+    const point = { x: folded.x + R, y: folded.y + R };
+    const onCushion = rail.axis === 'x'
+      ? point.y >= 0.115 && point.y <= TABLE.h - 0.115
+      : point.x >= 0.115 && point.x <= TABLE.w - 0.115 && Math.abs(point.x - TABLE.w / 2) >= 0.105;
+    if (!onCushion) return null;
+    points.push(point);
+    currentTiles[rail.axis] += direction;
+    previousT = t;
+  }
+  return [points[0], points[1]];
 }
 export function generateRoutes(req: SearchRequest): Route[] {
   const balls = req.balls, cue = balls.find(b => b.id === 0)!, target = balls.find(b => b.id === req.target)!;
@@ -58,6 +104,31 @@ export function generateRoutes(req: SearchRequest): Route[] {
       const kick = bounce(cue, directContact, rail);
       if (kick && targetClear && segmentClear(balls, cue.x, cue.y, kick.x, kick.y, [0, target.id]) && segmentClear(balls, kick.x, kick.y, directContact.x, directContact.y, [0, target.id]))
         add(cue, kick, `单库解球 · ${rail.name}`, dist(cue, kick) + dist(kick, target) + dist(target, pocket), cutCos(kick, directContact, target, pocket));
+    }
+    for (const firstRail of rails) for (const secondRail of rails) {
+      if (firstRail === secondRail) continue;
+      const routeRails: [Rail, Rail] = [firstRail, secondRail];
+      const banks = twoCushionBounces(target, pocket, routeRails);
+      if (!banks) continue;
+      const [firstBank, secondBank] = banks, contact = ghost(target, firstBank);
+      if (segmentClear(balls, target.x, target.y, firstBank.x, firstBank.y, [0, target.id])
+        && segmentClear(balls, firstBank.x, firstBank.y, secondBank.x, secondBank.y, [0, target.id])
+        && segmentClear(balls, secondBank.x, secondBank.y, pocket.x, pocket.y, [0, target.id])
+        && segmentClear(balls, cue.x, cue.y, contact.x, contact.y, [0, target.id]))
+        add(cue, contact, `双库翻袋 · ${firstRail.name} → ${secondRail.name}`,
+          dist(cue, target) + dist(target, firstBank) + dist(firstBank, secondBank) + dist(secondBank, pocket),
+          cutCos(cue, contact, target, firstBank));
+
+      const cueBanks = twoCushionBounces(cue, directContact, routeRails);
+      if (cueBanks) {
+        const [firstBank, secondBank] = cueBanks;
+        if (segmentClear(balls, cue.x, cue.y, firstBank.x, firstBank.y, [0, target.id])
+          && segmentClear(balls, firstBank.x, firstBank.y, secondBank.x, secondBank.y, [0, target.id])
+          && segmentClear(balls, secondBank.x, secondBank.y, directContact.x, directContact.y, [0, target.id]))
+          add(cue, firstBank, `双库解球 · ${firstRail.name} → ${secondRail.name}`,
+            dist(cue, firstBank) + dist(firstBank, secondBank) + dist(secondBank, directContact) + dist(target, pocket),
+            cutCos(cue, firstBank, target, pocket));
+      }
     }
   }
   // Legal first object strikes the selected target toward the called pocket.

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { ball, simulate, TABLE } from '../src/physics';
 import { adjudicate, freshRules } from '../src/rules';
 import { scene } from '../src/scenes';
-import { coarseShots, planScore, searchPlans, shotKey, type Route } from '../src/search';
+import { coarseShots, generateRoutes, planScore, searchPlans, shotKey, type Route } from '../src/search';
 
 for (const name of ['cut', 'bank', 'kick', 'combo', 'black'] as const) test(`search finds legal ${name} plans for the exact called pocket`, () => {
   const state = scene(name, 'practice'), request = { id: 1, ...state, sort: 'balanced' as const };
@@ -58,9 +58,9 @@ for (const name of ['jump', 'masse'] as const) test(`search automatically choose
     const cue = state.balls.find(b => b.id === 0)!;
     assert.ok(special.some(p => {
       const first = p.outcome.events.find(e => e.type === 'contact' && (e.ball === 0 || e.other === 0))!;
+      const firstRail = p.outcome.events.find(e => e.type === 'rail' && e.ball === 0)?.time ?? Infinity;
       return p.shot.elevation >= 36 && Math.abs(p.shot.tipX) > 0.2
-        && !p.outcome.events.some(e => e.type === 'rail' && e.ball === 0 && e.time < first.time)
-        && p.outcome.trails[0].some(t => t.t < first.time
+        && p.outcome.trails[0].some(t => t.t < Math.min(first.time, firstRail)
           && Math.abs((t.x - cue.x) * Math.sin(p.shot.angle) - (t.y - cue.y) * Math.cos(p.shot.angle)) > TABLE.r);
     }), 'elevated off-centre shot produces a curved approach before first contact');
   }
@@ -76,6 +76,13 @@ test('ranking preferences change the recommended tradeoff', () => {
   assert.ok(planScore(easy, 'simple') > planScore(position, 'simple'));
   assert.ok(planScore(position, 'position') > planScore(easy, 'position'));
   assert.ok(planScore(robust, 'robust') > planScore(position, 'robust'));
+});
+
+test('route generation includes clear two-cushion target banks and cue kicks', () => {
+  const state = scene('bank', 'practice');
+  const routes = generateRoutes({ id: 21, ...state, sort: 'balanced' });
+  assert.ok(routes.some(route => route.label.startsWith('双库翻袋 · ')));
+  assert.ok(routes.some(route => route.label.startsWith('双库解球 · ')));
 });
 
 test('fancy ranking prefers complex techniques, unusual routes and shots affecting more balls', () => {

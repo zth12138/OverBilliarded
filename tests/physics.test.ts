@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ball, legalPlacement, PhysicsWorld, POCKETS, rackBalls, simulate, TABLE } from '../src/physics';
+import { ball, CUSHIONS, legalPlacement, PhysicsWorld, POCKETS, rackBalls, simulate, TABLE } from '../src/physics';
 import type { Shot } from '../src/types';
 const base: Shot = { angle: 0, power: 35, tipX: 0, tipY: 0, elevation: 0, kind: 'normal' };
 
@@ -142,8 +142,19 @@ test('a shot wide of a side pocket rebounds instead of being captured or leaving
   assert.ok(sim.settled);
 });
 
+test('pocket mouths flare wider at the rail and join the cushion jaws continuously', () => {
+  const middleLeft = CUSHIONS[14], middleRight = CUSHIONS[15];
+  assert.equal(CUSHIONS[0].bx, middleLeft.ax);
+  assert.equal(CUSHIONS[1].ax, middleRight.ax);
+  assert.ok(middleRight.ax - middleLeft.ax > middleRight.bx - middleLeft.bx);
+  assert.ok(Math.hypot(middleLeft.bx - POCKETS[1].x, middleLeft.by - POCKETS[1].y) > TABLE.pocketR);
+  assert.equal(CUSHIONS[0].ax, CUSHIONS[6].ax);
+  assert.equal(CUSHIONS[4].ay, CUSHIONS[7].ay);
+  assert.ok(Math.hypot(CUSHIONS[6].bx, CUSHIONS[6].by) > TABLE.pocketR);
+});
+
 test('a side pocket jaw deflects a glancing shot before it enters the pocket', () => {
-  const sim = simulate([ball(0, 1.18, 0.18)], { ...base, angle: -75 * Math.PI / 180, power: 40 });
+  const sim = simulate([ball(0, 1.12, 0.12)], { ...base, angle: -0.45, power: 40 });
   const jaw = sim.events.find(e => e.type === 'rail' && e.rail === '中上袋角');
   const pocket = sim.events.find(e => e.type === 'pocket' && e.pocket === 1);
   assert.ok(jaw && pocket && jaw.time < pocket.time);

@@ -23,27 +23,29 @@ export function rackBalls(): Ball[] {
   }
   return out;
 }
-export interface Cushion { ax: number; ay: number; bx: number; by: number; name: string }
-const W = TABLE.w, H = TABLE.h, corner = 0.078, side = 0.071;
+export interface Cushion { ax: number; ay: number; bx: number; by: number; name: string; contactRadius?: number }
+const W = TABLE.w, H = TABLE.h;
+const cornerMouth = 0.082, sideMouth = 0.078, cornerThroat = 0.066, cornerDepth = 0.015;
+const sideThroat = 0.064, sideDepth = 0.02, jawRadius = TABLE.r * 0.45;
 export const CUSHIONS: Cushion[] = [
-  { ax: corner, ay: 0, bx: W / 2 - side, by: 0, name: '上库' },
-  { ax: W / 2 + side, ay: 0, bx: W - corner, by: 0, name: '上库' },
-  { ax: corner, ay: H, bx: W / 2 - side, by: H, name: '下库' },
-  { ax: W / 2 + side, ay: H, bx: W - corner, by: H, name: '下库' },
-  { ax: 0, ay: corner, bx: 0, by: H - corner, name: '左库' },
-  { ax: W, ay: corner, bx: W, by: H - corner, name: '右库' },
-  { ax: corner, ay: 0, bx: 0.03, by: -0.032, name: '左上袋角' },
-  { ax: 0, ay: corner, bx: -0.032, by: 0.03, name: '左上袋角' },
-  { ax: W - corner, ay: 0, bx: W - 0.03, by: -0.032, name: '右上袋角' },
-  { ax: W, ay: corner, bx: W + 0.032, by: 0.03, name: '右上袋角' },
-  { ax: corner, ay: H, bx: 0.03, by: H + 0.032, name: '左下袋角' },
-  { ax: 0, ay: H - corner, bx: -0.032, by: H - 0.03, name: '左下袋角' },
-  { ax: W - corner, ay: H, bx: W - 0.03, by: H + 0.032, name: '右下袋角' },
-  { ax: W, ay: H - corner, bx: W + 0.032, by: H - 0.03, name: '右下袋角' },
-  { ax: W / 2 - side, ay: 0, bx: W / 2 - 0.047, by: -0.047, name: '中上袋角' },
-  { ax: W / 2 + side, ay: 0, bx: W / 2 + 0.047, by: -0.047, name: '中上袋角' },
-  { ax: W / 2 - side, ay: H, bx: W / 2 - 0.047, by: H + 0.047, name: '中下袋角' },
-  { ax: W / 2 + side, ay: H, bx: W / 2 + 0.047, by: H + 0.047, name: '中下袋角' },
+  { ax: cornerMouth, ay: 0, bx: W / 2 - sideMouth, by: 0, name: '上库' },
+  { ax: W / 2 + sideMouth, ay: 0, bx: W - cornerMouth, by: 0, name: '上库' },
+  { ax: cornerMouth, ay: H, bx: W / 2 - sideMouth, by: H, name: '下库' },
+  { ax: W / 2 + sideMouth, ay: H, bx: W - cornerMouth, by: H, name: '下库' },
+  { ax: 0, ay: cornerMouth, bx: 0, by: H - cornerMouth, name: '左库' },
+  { ax: W, ay: cornerMouth, bx: W, by: H - cornerMouth, name: '右库' },
+  { ax: cornerMouth, ay: 0, bx: cornerThroat, by: cornerDepth, name: '左上袋角', contactRadius: jawRadius },
+  { ax: 0, ay: cornerMouth, bx: cornerDepth, by: cornerThroat, name: '左上袋角', contactRadius: jawRadius },
+  { ax: W - cornerMouth, ay: 0, bx: W - cornerThroat, by: cornerDepth, name: '右上袋角', contactRadius: jawRadius },
+  { ax: W, ay: cornerMouth, bx: W - cornerDepth, by: cornerThroat, name: '右上袋角', contactRadius: jawRadius },
+  { ax: cornerMouth, ay: H, bx: cornerThroat, by: H - cornerDepth, name: '左下袋角', contactRadius: jawRadius },
+  { ax: 0, ay: H - cornerMouth, bx: cornerDepth, by: H - cornerThroat, name: '左下袋角', contactRadius: jawRadius },
+  { ax: W - cornerMouth, ay: H, bx: W - cornerThroat, by: H - cornerDepth, name: '右下袋角', contactRadius: jawRadius },
+  { ax: W, ay: H - cornerMouth, bx: W - cornerDepth, by: H - cornerThroat, name: '右下袋角', contactRadius: jawRadius },
+  { ax: W / 2 - sideMouth, ay: 0, bx: W / 2 - sideThroat, by: sideDepth, name: '中上袋角', contactRadius: jawRadius },
+  { ax: W / 2 + sideMouth, ay: 0, bx: W / 2 + sideThroat, by: sideDepth, name: '中上袋角', contactRadius: jawRadius },
+  { ax: W / 2 - sideMouth, ay: H, bx: W / 2 - sideThroat, by: H - sideDepth, name: '中下袋角', contactRadius: jawRadius },
+  { ax: W / 2 + sideMouth, ay: H, bx: W / 2 + sideThroat, by: H - sideDepth, name: '中下袋角', contactRadius: jawRadius },
 ];
 export function legalPlacement(balls: Ball[], id: number, x: number, y: number, behindLine = false): boolean {
   const R = TABLE.r;
@@ -89,7 +91,7 @@ function sphereTime(dx: number, dy: number, dz: number, vx: number, vy: number, 
 }
 
 function cushionTime(b: Ball, seg: Cushion, duration: number): { time: number; nx: number; ny: number } | null {
-  const R = TABLE.r, endX = b.x + b.vx * duration, endY = b.y + b.vy * duration;
+  const R = seg.contactRadius ?? TABLE.r, endX = b.x + b.vx * duration, endY = b.y + b.vy * duration;
   if (Math.min(b.x, endX) > Math.max(seg.ax, seg.bx) + R || Math.max(b.x, endX) < Math.min(seg.ax, seg.bx) - R
     || Math.min(b.y, endY) > Math.max(seg.ay, seg.by) + R || Math.max(b.y, endY) < Math.min(seg.ay, seg.by) - R) return null;
   const sx = seg.bx - seg.ax, sy = seg.by - seg.ay, length = Math.hypot(sx, sy), tx = sx / length, ty = sy / length;
